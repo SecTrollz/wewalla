@@ -13,6 +13,7 @@
 #
 #  Profiles:
 #    verify   - Verification only (Python + numpy + scipy)
+#    termux   - Phone-only RSSI presence mode, non-root Android (Termux)
 #    python   - Full Python pipeline (API server, sensing, analytics)
 #    rust     - Rust pipeline (signal processing, API, CLI)
 #    browser  - WASM build for browser deployment
@@ -57,6 +58,7 @@ HAS_ESPIDF=false
 HAS_GIT=false
 HAS_GPU=false; GPU_INFO=""
 HAS_WIFI=false; WIFI_IFACE=""
+IS_TERMUX=false; HAS_TERMUX_API=false
 HAS_OPENBLAS=false
 HAS_PKGCONFIG=false
 HAS_GCC=false
@@ -95,6 +97,7 @@ usage() {
     echo ""
     echo "Profiles:"
     echo "  verify   Verification only (Python + numpy + scipy)"
+    echo "  termux   Phone-only RSSI presence mode, non-root Android (Termux)"
     echo "  python   Full Python pipeline (API, sensing, analytics)"
     echo "  rust     Rust pipeline (signal processing, benchmarks)"
     echo "  browser  WASM build for browser deployment (~10MB)"
@@ -150,6 +153,20 @@ detect_system() {
         OS_TYPE="other"
         OS_RELEASE="$(uname -s)"
         warn "Unsupported OS: ${OS_RELEASE}"
+    fi
+
+    # Termux (Android, non-root). Termux reports as Linux via uname, so
+    # detect it explicitly via $PREFIX / $TERMUX_VERSION rather than OS_TYPE.
+    if [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux"* ]]; then
+        IS_TERMUX=true
+        ok "Termux detected (non-root Android) — Termux ${TERMUX_VERSION:-unknown}"
+        if command -v termux-wifi-scaninfo &>/dev/null; then
+            HAS_TERMUX_API=true
+            ok "termux-api installed"
+        else
+            warn "termux-api not found — run: pkg install termux-api"
+            info "Also install the Termux:API app from the same source as Termux (F-Droid recommended)"
+        fi
     fi
 
     # Architecture
@@ -454,6 +471,10 @@ recommend_profile() {
     # verify is always available
     available_profiles+=("verify")
 
+    if $IS_TERMUX; then
+        available_profiles+=("termux")
+    fi
+
     if $HAS_PYTHON; then
         available_profiles+=("python")
     fi
@@ -474,7 +495,9 @@ recommend_profile() {
     fi
 
     # Determine recommendation (Rust is the primary runtime)
-    if $HAS_RUST && $HAS_CARGO; then
+    if $IS_TERMUX; then
+        recommended="termux"
+    elif $HAS_RUST && $HAS_CARGO; then
         recommended="rust"
     elif $HAS_PYTHON; then
         recommended="python"
@@ -497,6 +520,7 @@ recommend_profile() {
         fi
         case "$p" in
             verify)  echo -e "    ${BOLD}${idx})${RESET} verify  - Pipeline verification only (~5 MB)${marker}" ;;
+            termux)  echo -e "    ${BOLD}${idx})${RESET} termux  - Phone-only RSSI presence mode, non-root Android (~1 MB)${marker}" ;;
             python)  echo -e "    ${BOLD}${idx})${RESET} python  - Full Python pipeline + API server (~500 MB)${marker}" ;;
             rust)    echo -e "    ${BOLD}${idx})${RESET} rust    - Rust pipeline with ~810x speedup (~200 MB)${marker}" ;;
             browser) echo -e "    ${BOLD}${idx})${RESET} browser - WASM for browser deployment (~10 MB output)${marker}" ;;
@@ -549,6 +573,9 @@ install_deps() {
     case "$PROFILE" in
         verify)
             install_verify_deps
+            ;;
+        termux)
+            install_termux_deps
             ;;
         python)
             install_verify_deps
@@ -608,6 +635,40 @@ install_verify_deps() {
     else
         ok "numpy + scipy already installed"
     fi
+}
+
+install_termux_deps() {
+    echo -e "  ${CYAN}Termux (non-root, phone-only RSSI) dependencies:${RESET}"
+
+    if ! $IS_TERMUX; then
+        warn "Not running inside Termux — this profile is meant for Termux on Android."
+        info "Continuing anyway; scripts/termux/termux_presence.py still runs anywhere Python 3 and termux-wifi-scaninfo are available."
+    fi
+
+    if ! command -v python &>/dev/null && ! command -v python3 &>/dev/null; then
+        echo "  Installing python..."
+        pkg install -y python 2>&1 | tail -3
+    else
+        ok "python already installed"
+    fi
+
+    if ! $HAS_TERMUX_API; then
+        echo "  Installing termux-api package..."
+        pkg install -y termux-api 2>&1 | tail -3
+        warn "Also install the Termux:API app (same source as Termux, e.g. F-Droid) if you haven't already."
+        warn "Then grant it Location permission in Android settings — required for WiFi scan results since Android 8."
+    else
+        ok "termux-api already installed"
+    fi
+
+    echo ""
+    ok "No heavy deps needed for this profile (stdlib-only sensor + dashboard)."
+    echo -e "  ${DIM}Reminder: this mode is RSSI-only occupancy/motion — no pose, no vitals,${RESET}"
+    echo -e "  ${DIM}no through-wall detail. Those require CSI from ESP32-S3/C6 hardware.${RESET}"
+    echo -e "  ${DIM}See scripts/termux/README.md.${RESET}"
+    echo ""
+    echo -e "  Run it with:"
+    echo -e "    ${BOLD}termux-wake-lock && python scripts/termux/termux_presence.py${RESET}"
 }
 
 install_python_deps() {
