@@ -80,3 +80,13 @@ PY
   fi
   printf '%s' "$ip"
 }
+
+# free_mb [PATH]: free space in MB, or nothing if it cannot be read. Tries stat, df, then python.
+free_mb() {
+  local t="${1:-$HOME}" a="" b="" v=""
+  read -r a b < <(stat -f -c '%a %S' "$t" 2>/dev/null) || true
+  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -gt 0 ] 2>/dev/null; then echo $(( a * b / 1048576 )); return; fi
+  v="$(df -Pk "$t" 2>/dev/null | awk 'NR==2 && $4 ~ /^[0-9]+$/ && $4 > 0 {print int($4/1024)}')"
+  if [ -n "$v" ]; then echo "$v"; return; fi
+  python3 -c 'import shutil,sys; print(shutil.disk_usage(sys.argv[1]).free//1048576)' "$t" 2>/dev/null || true
+}

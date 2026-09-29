@@ -15,8 +15,10 @@ printf '%swewalla doctor%s\n' "$C_B" "$C_0"
 step "env" "Environment"
 if is_termux; then ok "Termux ${TERMUX_VERSION:-}"; else bad "not running inside Termux"; fi
 [ "$(uname -m)" = aarch64 ] && ok "arch aarch64" || meh "arch $(uname -m): prebuilt binaries are aarch64 only"
-free="$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"; free="${free:-0}"
-[ "$free" -ge 1000 ] && ok "free storage ${free} MB" || bad "free storage only ${free} MB"
+free="$(free_mb "$HOME")"
+if [ -z "$free" ]; then meh "could not read free storage"
+elif [ "$free" -ge 1000 ]; then ok "free storage ${free} MB"
+else bad "free storage only ${free} MB"; fi
 
 step "py" "Python stack"
 if have python3; then ok "$(python3 --version 2>&1)"; else bad "python3 missing (pkg install python)"; fi

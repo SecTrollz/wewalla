@@ -49,9 +49,11 @@ phase_preflight() {
   local arch; arch="$(uname -m)"
   if [ "$arch" = aarch64 ]; then ok "CPU: $arch"; else warn "CPU: $arch (prebuilt binaries are aarch64 only; you would have to build from source)"; fi
 
-  local free; free="$(df -Pm "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"; free="${free:-0}"
-  if [ "$free" -ge 3000 ]; then ok "Free storage: ${free} MB"
+  local free; free="$(free_mb "$HOME")"
+  if [ -z "$free" ]; then warn "Could not read free storage; continuing. (Check manually with: stat -f \$HOME)"
+  elif [ "$free" -ge 3000 ]; then ok "Free storage: ${free} MB"
   elif [ "$free" -ge 1000 ]; then warn "Free storage: ${free} MB (fine for the prebuilt path; a source build needs ~3000+)"
+  elif [ "$free" -ge 300 ]; then warn "Free storage: ${free} MB (tight; install may fail)"
   else fail "Free storage: ${free} MB. Free some space first."; exit 1; fi
 
   local ram; ram="$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)"
