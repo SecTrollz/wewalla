@@ -181,14 +181,14 @@ phase_nodes() {
 phase_finish() {
   step "8/8" "Finish"
   if [ -w "$WW_PREFIX/bin" ]; then
-    ln -sf "$HERE/wewalla" "$WW_PREFIX/bin/wewalla" && ok "installed command: wewalla"
+    ln -sf "$HERE/wewalla-setup" "$WW_PREFIX/bin/wewalla-setup" && ok "installed command: wewalla-setup"
   fi
-  chmod +x "$HERE"/*.sh "$HERE/wewalla" "$HERE/lite/lite.py" 2>/dev/null || true
+  chmod +x "$HERE"/*.sh "$HERE/wewalla-setup" "$HERE/lite/lite.py" 2>/dev/null || true
   printf '\n  %sNext:%s\n' "$C_B" "$C_0"
-  say "wewalla doctor        check everything"
-  say "wewalla lite          start the browser monitor  (http://127.0.0.1:$WW_HTTP_PORT)"
-  say "wewalla lite --rssi   add coarse phone-WiFi RSSI motion hint"
-  say "wewalla server --help see the full sensing server options"
+  say "wewalla-setup doctor        check everything"
+  say "wewalla-setup lite          start the browser monitor  (http://127.0.0.1:$WW_HTTP_PORT)"
+  say "wewalla-setup lite --rssi   add coarse phone-WiFi RSSI motion hint"
+  say "wewalla-setup server --help see the full sensing server options"
   info "Research prototype: not a medical device or safety system. Only sense spaces where everyone present has agreed."
 }
 

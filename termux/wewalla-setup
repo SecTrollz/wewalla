@@ -9,7 +9,7 @@ export WW_REPO="$(cd "$HERE/.." && pwd)"
 
 usage() {
   cat <<TXT
-wewalla (Termux)
+wewalla-setup (Termux: native sensing-server tooling; see also: wewalla)
 
   setup [opts]       guided install (resumable)         doctor         health check
   lite [opts]        browser monitor on :$WW_HTTP_PORT  server [args]  run the sensing server
@@ -38,8 +38,8 @@ case "$cmd" in
   adb-fix) exec bash "$HERE/adb-fix.sh" ;;
   patch-installer) exec bash "$HERE/patch-install-sh.sh" ;;
   uninstall)
-    if confirm "Remove $WW_HOME and the 'wewalla' command? (the repo itself is kept)" N; then
-      rm -rf "$WW_HOME"; rm -f "$WW_PREFIX/bin/wewalla"; ok "removed"
+    if confirm "Remove $WW_HOME and the 'wewalla-setup' command? (the repo itself is kept)" N; then
+      rm -rf "$WW_HOME"; rm -f "$WW_PREFIX/bin/wewalla-setup"; ok "removed"
     fi ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;
