@@ -18,7 +18,7 @@ def make_server(runtime, token, host="127.0.0.1", port=8080):
     def load(name):
         with open(os.path.join(os.path.dirname(__file__), name), encoding="utf-8") as fh:
             return fh.read()
-    page, map_page = load("dashboard.html"), load("map.html")
+    page, map_page, model3d = load("dashboard.html"), load("map.html"), load("model3d.html")
     MAX_BODY = {"/api/v1/map/pose": 262144, "/api/v1/map/planes": 262144, "/api/v1/map/voxels": 524288}
 
     class H(BaseHTTPRequestHandler):
@@ -63,6 +63,8 @@ def make_server(runtime, token, host="127.0.0.1", port=8080):
                 return self._send(200, page.replace("__TOKEN__", token), "text/html; charset=utf-8")
             if path == "/map":
                 return self._send(200, map_page.replace("__TOKEN__", token), "text/html; charset=utf-8")
+            if path == "/3d":
+                return self._send(200, model3d.replace("__TOKEN__", token), "text/html; charset=utf-8")
             ms = getattr(runtime, "mapstore", None)
             if path.startswith("/api/v1/map"):
                 if ms is None:
