@@ -114,6 +114,44 @@ def bed_line(s):
     return " | bed %s heart=%s breath=%s %sHz" % (b.get("state"), v(b.get("heart")), v(b.get("breathing")), b.get("fs"))
 
 
+def cmd_up(args):
+    """Everything `run` needs, done in order, saying what worked and what did not."""
+    ok = lambda m: print("  [ ok ] " + m)
+    no = lambda m, hint: print("  [ -- ] %s\n         %s" % (m, hint))
+    print("wewalla up")
+    config.token()
+    ok("pairing token ready (%s/token)" % config.home())
+    installed = bool(shutil.which("pm")) and bool(
+        subprocess.run(["pm", "path", PKG], capture_output=True, text=True).stdout.strip())
+    started = False
+    if installed:
+        r = _am("start", "-f", ACTIVITY_FLAGS, "-n", PKG + "/.MainActivity", "--ez", "autostart", "true",
+                "--es", "token", config.token(), "--es", "host", "127.0.0.1", "--ei", "port",
+                str(args.connector_port), "--es", "modes", "conn,scan,rtt", "--ei", "rate", "8")
+        started = r.returncode == 0
+        (ok if started else lambda m: no(m, "open the Wewalla Connector app and tap 2. Start sensing"))(
+            "connector app started" if started else "connector app did not start: " + (r.stderr.strip()[-120:]))
+    else:
+        no("connector app not installed: using slower Termux:API polling",
+           "better data: connector-apk/build.sh, then open the APK from the Files app")
+    wifi = "connector" if installed else "termux"
+    kinds = [wifi] + ([] if args.no_bed else ["bed"])
+    args.source = args.source or ",".join(kinds)
+    ok("sources: %s%s" % (args.source, "" if args.no_bed else
+                          "   (bed = phone flat on the mattress beside you for heart/breathing)"))
+    url = "http://%s:%d/" % hostport(args.http, 8080)
+    if not args.no_browser and shutil.which("termux-open-url"):
+        # the server starts within a second; the browser retries on its own if it is early
+        subprocess.Popen(["sh", "-c", "sleep 2; termux-open-url %s" % url],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ok("opening the dashboard: " + url)
+    else:
+        ok("dashboard: " + url)
+    print("  Ctrl+C stops sensing%s.\n" % (" (the connector app keeps its notification until `wewalla connector stop`)"
+                                            if started else ""))
+    return cmd_run(args)
+
+
 def cmd_calibrate(args):
     args.calibrate = args.seconds
     tok = config.token()
@@ -229,18 +267,28 @@ def main(argv=None):
         p.add_argument("--replay")
         p.add_argument("--speed", type=float, default=1.0)
 
+    def run_opts(r):
+        r.add_argument("--http", default="127.0.0.1:8080")
+        r.add_argument("--emit-udp", help="host:port to forward derived ADR-018 frames (e.g. the Rust sensing-server)")
+        r.add_argument("--record")
+        r.add_argument("--alerts", action="store_true")
+        r.add_argument("--speak", action="store_true")
+        r.add_argument("--calibrate", type=int, default=0)
+        r.add_argument("--no-calibration", action="store_true")
+        r.add_argument("--no-wakelock", action="store_true")
+        r.add_argument("--print-every", type=float, default=5.0)
+
     r = sub.add_parser("run", help="start sensing + dashboard")
     common(r)
-    r.add_argument("--http", default="127.0.0.1:8080")
-    r.add_argument("--emit-udp", help="host:port to forward derived ADR-018 frames (e.g. the Rust sensing-server)")
-    r.add_argument("--record")
-    r.add_argument("--alerts", action="store_true")
-    r.add_argument("--speak", action="store_true")
-    r.add_argument("--calibrate", type=int, default=0)
-    r.add_argument("--no-calibration", action="store_true")
-    r.add_argument("--no-wakelock", action="store_true")
-    r.add_argument("--print-every", type=float, default=5.0)
+    run_opts(r)
     r.set_defaults(fn=cmd_run)
+
+    u = sub.add_parser("up", help="one step: start the connector app, pick sources, open the dashboard")
+    common(u)
+    run_opts(u)
+    u.add_argument("--no-bed", action="store_true", help="skip the bed accelerometer (heart/breathing)")
+    u.add_argument("--no-browser", action="store_true")
+    u.set_defaults(fn=cmd_up, source=None)
 
     c = sub.add_parser("calibrate", help="learn the empty-room baseline")
     common(c)

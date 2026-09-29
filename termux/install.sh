@@ -22,14 +22,12 @@ if ((BUILD_APK)); then "$HERE/connector-apk/build.sh"; fi
 
 cat <<MSG
 
-Next:
-  1. Install the *Termux:API app* (same source as Termux, e.g. F-Droid), open it once, and grant
-     Location permission; keep Location switched ON.
-  2. wewalla doctor
-  3. wewalla connector install      # then tap Install in Android's dialog   (needs --apk build)
-  4. wewalla pair                   # copies the pairing token
-  5. wewalla connector start        # grants permissions on first run, then returns to Termux
-  6. wewalla calibrate              # leave the room empty for 60 s
-  7. wewalla run                    # dashboard: http://127.0.0.1:8080/
-No APK yet? 'wewalla run' still works via Termux:API only (slower, presence/motion only).
+Next (in plain Termux, not proot):
+  1. Install the *Termux:API app* (same source as Termux), open it once, allow Location, keep it ON.
+  2. termux-setup-storage   # once, so the APK can go to Downloads
+     cp ~/.wewalla/wewalla-connector.apk ~/storage/downloads/
+     then Files -> Download -> wewalla-connector.apk -> Install   (needs --apk build)
+  3. Open Wewalla Connector once: tap "1. Grant permissions", allow everything.
+  4. wewalla up             # starts everything and opens http://127.0.0.1:8080/
+No APK? 'wewalla up' still works via Termux:API only (slower; presence/motion + bed heart/breathing).
 MSG

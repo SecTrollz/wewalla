@@ -201,6 +201,24 @@ class TestBedSource(unittest.TestCase):
             src.stop()
         self.assertTrue(src._proc is None or src._proc.poll() is not None)
 
+    def test_stalled_stream_is_reset_and_restarted(self):
+        from wewalla.bcg import BcgAnalyzer
+        from wewalla.sources import bed
+        stall = os.path.join(self.bin, "termux-sensor")
+        with open(stall, "w") as fh:        # lists the sensor, then streams nothing (sensor held elsewhere)
+            fh.write('#!/bin/sh\ncase "$1" in -l) echo \'{"sensors": ["icm45621_acc"]}\'; exit 0;; -c) exit 0;; esac\nsleep 60\n')
+        old, bed.STALL_S = bed.STALL_S, 1.5
+        src = bed.BedSource(BcgAnalyzer())
+        src.start(lambda s: None)
+        try:
+            self.assertTrue(wait(lambda: src.stalls >= 1 and src.restarts >= 1, 12))
+            self.assertIn("reset and restarted", src.info()["last_error"])
+        finally:
+            src.stop()
+            bed.STALL_S = old
+        # nothing may be left behind: orphaned streams starved later runs on a real phone
+        self.assertEqual(subprocess.run(["pgrep", "-f", stall + " -s"], capture_output=True).stdout.strip(), b"")
+
 
 class TestEmitAndCsi(unittest.TestCase):
     def test_emit_is_valid_adr018_and_flagged_derived(self):

@@ -8,11 +8,30 @@ own accelerometer polling would compete for the same termux-sensor session.
 import json
 import math
 import os
+import signal
 import subprocess
 import time
 
 from .base import Source
 from .termux_api import find_accelerometer
+
+
+STALL_S = 8.0   # no readings this long -> reset the sensor session and restart the stream
+
+
+def kill_tree(p):
+    """termux-sensor is a shell script whose child holds the stdout pipe: killing only the script
+    leaves the child streaming forever (orphans that starve later runs). Kill the whole group."""
+    if p is None or p.poll() is not None:
+        return
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        p.kill()
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 class BedSource(Source):
@@ -24,20 +43,42 @@ class BedSource(Source):
         self.raw_path = raw_path          # optional local CSV of t,x,y,z (body data: keep it private)
         self.exe = lambda n: exe_prefix + n
         self.sensor = None
-        self.readings = self.errors = self.restarts = 0
+        self.readings = self.errors = self.restarts = self.stalls = 0
         self.last_error = None
         self._proc = None
 
     def _start(self):
         self._spawn(self._loop, "bed-accel")
         self._spawn(self._motion_loop, "bed-motion")
+        self._spawn(self._watchdog, "bed-watchdog")
+
+    def _reset_sensor(self):
+        # Releases every Termux:API sensor listener, including ones left behind by a crashed or
+        # killed earlier run, which otherwise keep the accelerometer and starve this stream.
+        try:
+            subprocess.run([self.exe("termux-sensor"), "-c"], capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    def _watchdog(self):
+        last, since = -1, time.time()
+        while not self._stop.wait(1.0):
+            if self.readings != last:
+                last, since = self.readings, time.time()
+                continue
+            p = self._proc
+            if p is not None and p.poll() is None and time.time() - since > STALL_S:
+                self.stalls += 1
+                self.last_error = ("no accelerometer data for %ds (another app or an old session may hold "
+                                   "the sensor); reset and restarted" % STALL_S)
+                self._reset_sensor()
+                kill_tree(p)
+                since = time.time()
 
     def stop(self):
         self._stop.set()
-        p = self._proc
-        if p and p.poll() is None:
-            p.kill()
-        subprocess.run([self.exe("termux-sensor"), "-c"], capture_output=True, timeout=10)
+        kill_tree(self._proc)
+        self._reset_sensor()
         super().stop()
 
     # -- parsing (separate from I/O so tests can feed canned output) -------------
@@ -69,6 +110,7 @@ class BedSource(Source):
         if not self.sensor:
             self.last_error = "no accelerometer found by termux-sensor -l"
             return
+        self._reset_sensor()
         raw = None
         if self.raw_path:
             fd = os.open(self.raw_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -77,7 +119,8 @@ class BedSource(Source):
             try:
                 self._proc = subprocess.Popen(
                     [self.exe("termux-sensor"), "-s", self.sensor, "-d", str(self.delay_ms)],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                    start_new_session=True)
                 for x, y, z in self.parse_stream(self._proc.stdout):
                     if self._stop.is_set():
                         break
@@ -90,8 +133,7 @@ class BedSource(Source):
                 self.errors += 1
                 self.last_error = str(e)[:120]
             finally:
-                if self._proc and self._proc.poll() is None:
-                    self._proc.kill()
+                kill_tree(self._proc)
             if not self._stop.is_set():                 # stream ended: back off, then restart it
                 self.restarts += 1
                 self._stop.wait(2.0)
@@ -107,4 +149,5 @@ class BedSource(Source):
     def info(self):
         return {"name": self.name, "sensor": self.sensor, "readings": self.readings,
                 "fs": None if self.bcg.fs is None else round(self.bcg.fs, 1),
-                "restarts": self.restarts, "errors": self.errors, "last_error": self.last_error}
+                "restarts": self.restarts, "stalls": self.stalls, "errors": self.errors,
+                "last_error": self.last_error}

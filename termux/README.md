@@ -60,25 +60,38 @@ writes the frame format documented in `wewalla/adr018.py`. Run `wewalla run --so
 
 ## Quick start (in Termux)
 
+Run everything in **plain Termux** (the normal Termux shell, prompt `~ $`), not inside a
+`proot-distro` Linux: `wewalla` needs Termux:API and Android's `am`/`pm`, and your settings live in
+Termux's `~/.wewalla/` (pairing token, signing key, calibration).
+
+**One-time setup**
+
 ```sh
-pkg install git && git clone <your fork> && cd wewalla/termux
-./install.sh --apk                 # python, termux-api, JDK + build tools, builds the APK
+pkg install git && git clone https://github.com/SecTrollz/wewalla && cd wewalla/termux
+./install.sh --apk        # python, termux-api, build tools; builds the connector APK; links `wewalla`
+cp ~/.wewalla/wewalla-connector.apk ~/storage/downloads/   # needs `termux-setup-storage` once
 ```
 
-1. Install the **Termux:API app** (same source as Termux; F-Droid builds must match), open it once,
-   grant *Location*, keep Location ON.
-2. `wewalla doctor` — checks everything and tells you what to fix.
-3. `wewalla connector install` → tap *Install* (allow "install unknown apps" for Termux once).
-   If Android says *problem parsing the package* (seen on Android 16 when the installer is opened
-   from Termux), copy the APK to `~/storage/downloads/` and open it from the Files app instead.
-4. `wewalla pair` — prints/copies the pairing token.
-5. `wewalla connector start` — opens the app briefly, asks for permissions the first time, starts the
-   foreground service, returns to Termux. (First run: paste the token in the app if `pair` didn't reach it.)
-6. `wewalla calibrate` — leave the room empty for 60 s. Saves `~/.wewalla/calibration.json`.
-7. `wewalla run` — dashboard at <http://127.0.0.1:8080/>, status lines in the terminal.
+1. Install the **Termux:API app** (same source as Termux, e.g. F-Droid), open it once, allow
+   *Location*, keep Location ON.
+2. Install the connector: open **Files → Download → wewalla-connector.apk → Install**.
+   (Opening the installer from Termux can fail on Android 16 with *problem parsing the package*.)
+3. First time only: open **Wewalla Connector**, tap *1. Grant permissions* and allow everything.
 
-Without the APK, `wewalla run` falls back to Termux:API polling automatically (`--source auto`).
-Try it with no hardware: `wewalla run --source sim`.
+**Every time**
+
+```sh
+wewalla up            # starts the connector app, picks sources, opens the dashboard
+```
+
+It prints a checklist of what is running and why anything is not, then status lines every 5 s.
+The dashboard is <http://127.0.0.1:8080/>. Ctrl+C stops sensing; `wewalla connector stop` also stops
+the app. For heart/breathing, lay the phone **flat on the mattress beside your chest** and lie still:
+readings appear after ~20 s (heart) and ~40 s (breathing). `wewalla up --no-bed` skips that.
+
+Optional: `wewalla calibrate --source connector` (leave the room for 60 s) improves presence.
+`wewalla doctor` checks the whole setup. Everything `up` does can be done by hand with
+`wewalla run --source connector,bed` (see *Commands*). Try it without a phone: `wewalla run --source sim`.
 
 Keep the phone **still** (propped up, not in hand): the accelerometer gate freezes analysis while it moves.
 Run `termux-wake-lock` (done automatically by `run`) and exempt Termux and the connector from battery optimisation.
