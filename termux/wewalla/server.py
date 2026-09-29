@@ -10,6 +10,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+STRICT_CSP = "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+WEBGL_CSP = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://unpkg.com blob:; worker-src blob:; connect-src 'self' https://unpkg.com"
 LOOPBACK = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
@@ -19,6 +21,8 @@ def make_server(runtime, token, host="127.0.0.1", port=8080):
         with open(os.path.join(os.path.dirname(__file__), name), encoding="utf-8") as fh:
             return fh.read()
     page, map_page, model3d = load("dashboard.html"), load("map.html"), load("model3d.html")
+    _ui = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "ui"))
+    UI_DIR = _ui if os.path.isdir(_ui) else None
     MAX_BODY = {"/api/v1/map/pose": 262144, "/api/v1/map/planes": 262144, "/api/v1/map/voxels": 524288}
 
     class H(BaseHTTPRequestHandler):
@@ -40,16 +44,19 @@ def make_server(runtime, token, host="127.0.0.1", port=8080):
             got = self.headers.get("X-Wewalla-Token") or (q.get("token") or [""])[0]
             return hmac.compare_digest(got.encode(), token.encode())
 
-        def _send(self, code, body, ctype="application/json"):
+        def _send(self, code, body, ctype="application/json", csp=None):
             b = body if isinstance(body, bytes) else body.encode()
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(b)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+            self.send_header("Content-Security-Policy", csp or STRICT_CSP)
             self.end_headers()
-            self.wfile.write(b)
+            try:
+                self.wfile.write(b)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
 
         def do_GET(self):
             if not self._host_ok():
@@ -62,9 +69,14 @@ def make_server(runtime, token, host="127.0.0.1", port=8080):
             if path == "/":
                 return self._send(200, page.replace("__TOKEN__", token), "text/html; charset=utf-8")
             if path == "/map":
-                return self._send(200, map_page.replace("__TOKEN__", token), "text/html; charset=utf-8")
+                return self._send(200, map_page.replace("__TOKEN__", token), "text/html; charset=utf-8", csp=WEBGL_CSP)
             if path == "/3d":
-                return self._send(200, model3d.replace("__TOKEN__", token), "text/html; charset=utf-8")
+                return self._send(200, model3d.replace("__TOKEN__", token), "text/html; charset=utf-8", csp=WEBGL_CSP)
+            if path in ("/observatory", "/observatory/"):
+                q = urlparse(self.path).query
+                return self._redirect("/ui/observatory.html" + (("?" + q) if q else ""))
+            if path.startswith("/ui/"):
+                return self._serve_ui(path[len("/ui/"):])
             ms = getattr(runtime, "mapstore", None)
             if path.startswith("/api/v1/map"):
                 if ms is None:
@@ -99,6 +111,27 @@ def make_server(runtime, token, host="127.0.0.1", port=8080):
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
                 return
+
+        def _redirect(self, location):
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _serve_ui(self, rel):
+            import mimetypes, posixpath
+            if UI_DIR is None:
+                return self._send(404, '{"error":"observatory UI not found next to the repo"}')
+            rel = posixpath.normpath("/" + rel).lstrip("/")          # blocks ../ traversal
+            full = os.path.realpath(os.path.join(UI_DIR, rel))
+            if not (full == UI_DIR or full.startswith(UI_DIR + os.sep)) or not os.path.isfile(full):
+                return self._send(404, '{"error":"not found"}')
+            ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+            if ctype.startswith("text") or "javascript" in ctype or "json" in ctype:
+                ctype += "; charset=utf-8"
+            with open(full, "rb") as fh:
+                body = fh.read()
+            self._send(200, body, ctype, csp=WEBGL_CSP if full.endswith((".html", ".js")) else None)
 
         def do_POST(self):
             if not self._host_ok():

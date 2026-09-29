@@ -119,9 +119,9 @@ def bed_line(s):
 
 def cmd_up(args):
     """Everything `run` needs, done in order, saying what worked and what did not."""
-    ok = lambda m: print("  [ ok ] " + m)
-    no = lambda m, hint: print("  [ -- ] %s\n         %s" % (m, hint))
-    print("wewalla up")
+    ok = lambda m: print("  [ ok ] " + m, flush=True)
+    no = lambda m, hint: print("  [ -- ] %s\n         %s" % (m, hint), flush=True)
+    print("wewalla up", flush=True)
     config.token()
     ok("pairing token ready (%s/token)" % config.home())
     installed = bool(shutil.which("pm")) and bool(
