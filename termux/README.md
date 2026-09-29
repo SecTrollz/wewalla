@@ -138,6 +138,29 @@ rates on your phone, the `aapt2`/`d8` build branches (the `aapt`/`dx` branch is 
 Termux package names/versions drifting. If a step fails, `wewalla doctor` and `connector-apk/build.sh`
 print what is missing. Please report real-device findings.
 
+## Room map (AR + Wi-Fi)
+
+`wewalla up` (or `run`) also serves a room map at <http://127.0.0.1:8080/map>. Open it in **Chrome**
+on the phone and tap **Start AR mapping**, then walk slowly around the room pointing the camera at
+walls, floor and furniture. It uses ARCore through WebXR:
+
+- **Geometry (MEASURED by the camera):** the 6-DoF track (your path), detected planes, and a depth
+  point cloud voxelised to 0.1 m. Columns are classified wall / furniture / low by height. Aim the
+  centre circle at something and tap **Tag here** to label a bed, sofa, router, door, etc.
+- **Wi-Fi radio map:** every fresh RSSI reading is stamped with where the phone was at that instant,
+  building a per-access-point signal map on a 0.5 m grid ("signal objects"). This also lets the map
+  estimate where the **phone** is from Wi-Fi alone (k-nearest fingerprint) once you have walked a bit.
+- **GPS anchor:** one location fix georeferences the whole map (coarsely, ~15 m) so it can be placed
+  against a world map such as OpenStreetMap. GPS does not locate objects to that precision.
+- **People:** shown at **room level only** (the presence border), not as positioned bodies. Deriving
+  body position or pose needs real CSI (see below), which this phone's Wi-Fi chip does not expose.
+- **Heart/breathing** of a person on the bed come from the bed accelerometer (contact), and are drawn
+  on the bed marker when the `bed` source is running.
+
+Depth and plane detection depend on the device's ARCore support; the page reports what it actually
+got. The whole map is stored privately on the phone at `~/.wewalla/map.json` (mode 600) and never
+leaves it. **New map** starts a fresh AR origin (one map = one continuous AR session).
+
 ## Relationship to the upstream stack
 
 The Rust workspace in `../v2` (the heavy `sensing-server`, ML crates) is untouched and remains

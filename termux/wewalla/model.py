@@ -12,3 +12,4 @@ class Sample:
     group: str = G_RSSI
     fresh: bool = True  # False when the source re-delivered a cached value
     freq: int = 0       # MHz, 0 = unknown
+    label: str = ""     # human name (SSID) when the source knows it

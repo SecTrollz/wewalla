@@ -15,8 +15,11 @@ LOOPBACK = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 def make_server(runtime, token, host="127.0.0.1", port=8080):
     lan = host not in LOOPBACK
-    with open(os.path.join(os.path.dirname(__file__), "dashboard.html"), encoding="utf-8") as fh:
-        page = fh.read()
+    def load(name):
+        with open(os.path.join(os.path.dirname(__file__), name), encoding="utf-8") as fh:
+            return fh.read()
+    page, map_page = load("dashboard.html"), load("map.html")
+    MAX_BODY = {"/api/v1/map/pose": 262144, "/api/v1/map/planes": 262144, "/api/v1/map/voxels": 524288}
 
     class H(BaseHTTPRequestHandler):
         server_version = "wewalla"
@@ -58,6 +61,17 @@ def make_server(runtime, token, host="127.0.0.1", port=8080):
                 return self._send(401, '{"error":"token required"}')
             if path == "/":
                 return self._send(200, page.replace("__TOKEN__", token), "text/html; charset=utf-8")
+            if path == "/map":
+                return self._send(200, map_page.replace("__TOKEN__", token), "text/html; charset=utf-8")
+            ms = getattr(runtime, "mapstore", None)
+            if path.startswith("/api/v1/map"):
+                if ms is None:
+                    return self._send(404, '{"error":"mapping not enabled"}')
+                if path == "/api/v1/map":
+                    return self._send(200, json.dumps(ms.summary()))
+                if path == "/api/v1/map/radio":
+                    key = (parse_qs(urlparse(self.path).query).get("key") or [""])[0][:80]
+                    return self._send(200, json.dumps({"key": key, "cell_m": 0.5, "cells": ms.radio(key)}))
             if path == "/api/v1/state":
                 return self._send(200, json.dumps(runtime.state))
             if path == "/api/v1/history":
@@ -91,7 +105,7 @@ def make_server(runtime, token, host="127.0.0.1", port=8080):
                 return self._send(401, '{"error":"token required"}')
             path = urlparse(self.path).path
             try:
-                n = max(0, min(int(self.headers.get("Content-Length") or 0), 4096))
+                n = max(0, min(int(self.headers.get("Content-Length") or 0), MAX_BODY.get(path, 4096)))
                 body = json.loads(self.rfile.read(n) or b"{}")
                 if not isinstance(body, dict):
                     raise ValueError
@@ -104,6 +118,37 @@ def make_server(runtime, token, host="127.0.0.1", port=8080):
                     return self._send(400, '{"error":"seconds must be a number"}')
                 runtime.calibrate(secs)
                 return self._send(202, json.dumps({"calibrating_s": secs}))
+            ms = getattr(runtime, "mapstore", None)
+            if path.startswith("/api/v1/map/"):
+                if ms is None:
+                    return self._send(404, '{"error":"mapping not enabled"}')
+                try:
+                    if path == "/api/v1/map/pose":
+                        rows = body.get("poses")
+                        if not isinstance(rows, list):
+                            raise ValueError("poses must be a list")
+                        return self._send(200, json.dumps({"added": ms.add_poses(rows)}))
+                    if path == "/api/v1/map/voxels":
+                        rows = body.get("voxels")
+                        if not isinstance(rows, list):
+                            raise ValueError("voxels must be a list")
+                        return self._send(200, json.dumps({"added": ms.add_voxels(rows)}))
+                    if path == "/api/v1/map/object":
+                        return self._send(200, json.dumps(ms.add_object(body)))
+                    if path == "/api/v1/map/object/delete":
+                        return self._send(200, json.dumps({"deleted": ms.delete_object(body.get("id"))}))
+                    if path == "/api/v1/map/planes":
+                        planes = body.get("planes")
+                        if not isinstance(planes, list):
+                            raise ValueError("planes must be a list")
+                        return self._send(200, json.dumps({"stored": ms.set_planes(planes)}))
+                    if path == "/api/v1/map/geo":
+                        return self._send(200, json.dumps(ms.set_geo(body)))
+                    if path == "/api/v1/map/reset":
+                        ms.reset()
+                        return self._send(200, '{"reset":true}')
+                except (KeyError, TypeError, ValueError) as e:
+                    return self._send(400, json.dumps({"error": str(e)[:200]}))
             self._send(404, '{"error":"not found"}')
 
     srv = ThreadingHTTPServer((host, port), H)

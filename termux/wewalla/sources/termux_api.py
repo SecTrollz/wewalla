@@ -94,7 +94,9 @@ class TermuxApiSource(Source):
         key = "conn:" + mac
         fresh = self._last.get(key) != rssi
         self._last[key] = rssi
-        self.sink(Sample(now, key, rssi, G_RSSI, fresh, int(d.get("frequency_mhz") or 0)))
+        ssid = str(d.get("ssid") or "")
+        self.sink(Sample(now, key, rssi, G_RSSI, fresh, int(d.get("frequency_mhz") or 0),
+                         "" if ssid.startswith("<unknown") else ssid[:32]))
 
     def ingest_scan(self, lst, now):
         if not isinstance(lst, list):
@@ -107,7 +109,8 @@ class TermuxApiSource(Source):
                 tok = ap.get("timestamp", now)
                 fresh = self._last.get(key) != tok
                 self._last[key] = tok
-                self.sink(Sample(now, key, rssi, G_RSSI, fresh, int(ap.get("frequency_mhz") or 0)))
+                self.sink(Sample(now, key, rssi, G_RSSI, fresh, int(ap.get("frequency_mhz") or 0),
+                                 str(ap.get("ssid") or "")[:32]))
             except (KeyError, TypeError, ValueError):
                 continue
 

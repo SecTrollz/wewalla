@@ -47,9 +47,11 @@ class FrameEmitter:
 
 class Runtime:
     def __init__(self, source: Source, analyzer, emitter=None, recorder=None, alerts=None,
-                 tick_s=1.0, emit_hz=5.0, bcg=None):
+                 tick_s=1.0, emit_hz=5.0, bcg=None, mapstore=None):
         self.source, self.analyzer, self.emitter = source, analyzer, emitter
         self.bcg = bcg
+        self.mapstore = mapstore
+        self._next_save = 0.0
         self.recorder, self.alerts = recorder, alerts
         self.tick_s, self.emit_s = tick_s, 1.0 / emit_hz
         self.q = queue.Queue(maxsize=50000)
@@ -84,6 +86,11 @@ class Runtime:
 
     def stop(self):
         self._stop.set()
+        if self.mapstore is not None:
+            try:
+                self.mapstore.save()
+            except OSError:
+                pass
         self.source.stop()
         if self._thread:
             self._thread.join(timeout=3)
@@ -134,8 +141,24 @@ class Runtime:
             self.analyzer.set_phone_motion(item[1], item[2])
             return
         self.analyzer.push(item)
+        if self.mapstore is not None:
+            self.mapstore.on_sample(item)
         if self.recorder:
             self.recorder(item)
+
+    def _map_state(self, now):
+        ms = self.mapstore
+        current = {k: s.pts[-1][1] for k, s in self.analyzer.series.items()
+                   if s.group == G_RSSI and s.pts and now - s.pts[-1][0] < 30}
+        if now >= self._next_save:
+            self._next_save = now + 10.0
+            try:
+                ms.save()
+            except OSError:
+                pass
+        return {"poses": len(ms.poses), "cells": len(ms.cells), "wifi_placed": ms.placed,
+                "ar_live": bool(ms.pose_t) and now - ms.pose_t[-1] < 3.0,
+                "phone_estimate": ms.locate(current) if len(current) >= 3 else None}
 
     def _tick(self, now):
         prev = self.state
@@ -151,6 +174,8 @@ class Runtime:
             self._cal_until = None
         if self.bcg is not None:
             res["bed"] = self.bcg.analyze(now)
+        if self.mapstore is not None:
+            res["map"] = self._map_state(now)
         res["calibrating"] = self.calibrating
         res["source"] = self.source.info()
         res["version"] = __version__

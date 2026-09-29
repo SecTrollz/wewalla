@@ -9,6 +9,7 @@ import time
 from . import __version__, config
 from .bcg import BcgAnalyzer
 from .dsp import Analyzer
+from .mapping import MapStore
 from .pipeline import FrameEmitter, Runtime
 from .server import make_server, serve_in_thread
 from .sources.adr018_udp import Adr018Source
@@ -75,16 +76,18 @@ def cmd_run(args):
         from .alerts import Alerts
         alerts = Alerts(speak=args.speak)
     bcg = BcgAnalyzer() if "bed" in source_kinds(args) else None
+    mapstore = MapStore(str(config.home() / "map.json"))
     rt = Runtime(build_source(args, tok, bcg), an, emitter, Recorder(args.record) if args.record else None,
-                 alerts, bcg=bcg)
+                 alerts, bcg=bcg, mapstore=mapstore)
     h, p = hostport(args.http, 8080)
     srv = make_server(rt, tok, h, p)
     rt.start()
     serve_in_thread(srv)
     if shutil.which("termux-wake-lock") and not args.no_wakelock:
         subprocess.run(["termux-wake-lock"], stderr=subprocess.DEVNULL)
-    print("wewalla %s | source=%s | dashboard http://%s:%d/ | calibration=%s" % (
-        __version__, args.source, h, srv.server_address[1], "loaded" if cal else "none (adaptive)"))
+    print("wewalla %s | source=%s | dashboard http://%s:%d/ | room map http://%s:%d/map | calibration=%s" % (
+        __version__, args.source, h, srv.server_address[1], h, srv.server_address[1],
+        "loaded" if cal else "none (adaptive)"))
     if args.calibrate:
         rt.calibrate(args.calibrate)
         print("calibrating for %ds - keep the room empty" % args.calibrate)
