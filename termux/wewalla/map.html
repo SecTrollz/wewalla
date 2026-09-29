@@ -1,0 +1,240 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Wewalla Room Map</title>
+<style>
+:root{--bg:#0f1216;--fg:#e8ecf1;--mut:#8b96a5;--card:#1a2028;--line:#2a323d;--ok:#39d98a;--warn:#f5b73b;--bad:#ff5d6c;--acc:#39d98a;--btn-fg:#06120b;--wall:#c9d1db;--furn:#f5b73b;--low:#5a6b80}
+@media(prefers-color-scheme:light){:root{--bg:#f4f6f8;--fg:#141a22;--mut:#5b6673;--card:#fff;--line:#dde2e8;--ok:#138a52;--warn:#a86a00;--bad:#c62f3d;--acc:#138a52;--btn-fg:#fff;--wall:#2b333d;--furn:#c77d00;--low:#9aa7b6}}
+*{box-sizing:border-box}
+body{margin:0;padding:max(12px,env(safe-area-inset-top)) 12px max(12px,env(safe-area-inset-bottom));background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif;max-width:900px;margin-inline:auto}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+h1{font-size:18px;margin:0}a{color:var(--acc)}
+.small{font-size:12px;color:var(--mut)}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+button,select{background:var(--acc);color:var(--btn-fg);border:0;border-radius:10px;padding:10px 14px;min-height:44px;font:inherit;font-weight:600;cursor:pointer}
+button.sec,select{background:var(--card);color:var(--fg);border:1px solid var(--line)}
+button.danger{background:var(--bad);color:#fff}
+button:disabled{opacity:.5}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px}
+#mapwrap{position:relative;border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden;touch-action:none}
+#map{display:block;width:100%;height:min(70vh,560px)}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--mut);margin-top:6px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:4px}
+.list{max-height:220px;overflow:auto;font-size:13px}
+.list div{display:flex;justify-content:space-between;gap:8px;padding:6px 4px;border-bottom:1px solid var(--line);cursor:pointer}
+.list div.sel{background:color-mix(in srgb,var(--acc) 18%,transparent)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin-top:10px}
+/* AR overlay (shown only inside the immersive session) */
+#ov{position:fixed;inset:0;display:none;pointer-events:none;color:#fff;font:15px system-ui,sans-serif}
+#ov.on{display:block}
+#ov .top{position:absolute;top:max(10px,env(safe-area-inset-top));left:10px;right:10px;background:rgba(0,0,0,.55);border-radius:10px;padding:8px 10px;font-size:13px}
+#ov .cross{position:absolute;left:50%;top:50%;width:34px;height:34px;margin:-17px 0 0 -17px;border:2px solid #fff;border-radius:50%;box-shadow:0 0 0 2px rgba(0,0,0,.4)}
+#ov .cross.hit{border-color:#39d98a}
+#ov .bot{position:absolute;left:10px;right:10px;bottom:max(12px,env(safe-area-inset-bottom));display:flex;gap:8px;flex-wrap:wrap;pointer-events:auto}
+#ov .bot button,#ov .bot select{flex:1 1 auto;min-width:88px;background:rgba(20,26,34,.85);color:#fff;border:1px solid rgba(255,255,255,.3)}
+#ov .bot button.go{background:#39d98a;color:#06120b}
+</style></head><body>
+<header><h1>Room map</h1><a class="small" href="/">← dashboard</a>
+<span class="small" id="live" style="margin-left:auto">…</span></header>
+
+<div class="row">
+<button id="start">Start AR mapping</button>
+<button class="sec" id="fit">Fit view</button>
+<select id="layer" aria-label="Map layer">
+<option value="geo">Layer: geometry</option>
+<option value="radio">Layer: Wi-Fi radio map</option>
+</select>
+<button class="sec danger" id="reset">New map</button>
+</div>
+<p class="small" id="support">Checking AR support…</p>
+
+<div id="mapwrap"><svg id="map" role="img" aria-label="Top-down room map"></svg></div>
+<div class="legend">
+<span><i class="sw" style="background:var(--wall)"></i>wall (depth ≥1.8 m)</span>
+<span><i class="sw" style="background:var(--furn)"></i>furniture (0.25–1.8 m)</span>
+<span><i class="sw" style="background:var(--low)"></i>low objects</span>
+<span><i class="sw" style="background:var(--acc)"></i>your AR path</span>
+<span>◎ access point (estimated)</span><span>▲ phone</span>
+</div>
+<p class="small" id="counts"></p>
+
+<div class="grid2">
+<div class="card"><b>Signal objects</b> <span class="small">Wi-Fi access points the phone hears. Tap one for its radio map.</span>
+<div class="list" id="aps"></div></div>
+<div class="card"><b>Tagged objects</b> <span class="small">From AR taps. Tap one to delete.</span>
+<div class="list" id="objs"></div></div>
+</div>
+<p class="small">Geometry = ARCore (camera depth + tracking). Wi-Fi maps signal strength over space and estimates where the <i>phone</i> is;
+it does not see furniture or pinpoint people. People: room-level presence from the dashboard. Map data stays on this phone (~/.wewalla/map.json).</p>
+
+<div id="ov"><div class="top" id="ovtop">Starting AR…</div><div class="cross" id="cross"></div>
+<div class="bot">
+<select id="kind" aria-label="Object type">
+<option>bed</option><option>sofa</option><option>table</option><option>desk</option><option>chair</option>
+<option>wardrobe</option><option>tv</option><option>door</option><option>window</option><option>corner</option>
+<option>router</option><option>phone_spot</option><option>other</option></select>
+<button class="go" id="tag">Tag here</button>
+<button id="stop">Done</button>
+</div></div>
+
+<script>
+"use strict";
+const TOKEN="__TOKEN__",$=id=>document.getElementById(id);
+const post=(p,b)=>fetch(p,{method:"POST",headers:{"X-Wewalla-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify(b)});
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const NS="http://www.w3.org/2000/svg";
+let MAP=null,STATE=null,selAP=null,RADIO=null,view=null,livePose=null;
+
+// ---------------------------------------------------------------- 4x4 helpers (column-major)
+function inv4(m){const a=m,o=new Float32Array(16);
+const b00=a[0]*a[5]-a[1]*a[4],b01=a[0]*a[6]-a[2]*a[4],b02=a[0]*a[7]-a[3]*a[4],b03=a[1]*a[6]-a[2]*a[5],
+b04=a[1]*a[7]-a[3]*a[5],b05=a[2]*a[7]-a[3]*a[6],b06=a[8]*a[13]-a[9]*a[12],b07=a[8]*a[14]-a[10]*a[12],
+b08=a[8]*a[15]-a[11]*a[12],b09=a[9]*a[14]-a[10]*a[13],b10=a[9]*a[15]-a[11]*a[13],b11=a[10]*a[15]-a[11]*a[14];
+let d=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;if(!d)return null;d=1/d;
+o[0]=(a[5]*b11-a[6]*b10+a[7]*b09)*d;o[1]=(a[2]*b10-a[1]*b11-a[3]*b09)*d;o[2]=(a[13]*b05-a[14]*b04+a[15]*b03)*d;o[3]=(a[10]*b04-a[9]*b05-a[11]*b03)*d;
+o[4]=(a[6]*b08-a[4]*b11-a[7]*b07)*d;o[5]=(a[0]*b11-a[2]*b08+a[3]*b07)*d;o[6]=(a[14]*b02-a[12]*b05-a[15]*b01)*d;o[7]=(a[8]*b05-a[10]*b02+a[11]*b01)*d;
+o[8]=(a[4]*b10-a[5]*b08+a[7]*b06)*d;o[9]=(a[1]*b08-a[0]*b10-a[3]*b06)*d;o[10]=(a[12]*b04-a[13]*b02+a[15]*b00)*d;o[11]=(a[9]*b02-a[8]*b04-a[11]*b00)*d;
+o[12]=(a[5]*b07-a[4]*b09-a[6]*b06)*d;o[13]=(a[0]*b09-a[1]*b07+a[2]*b06)*d;o[14]=(a[13]*b01-a[12]*b03-a[14]*b00)*d;o[15]=(a[8]*b03-a[9]*b01+a[10]*b00)*d;return o}
+const mul=(m,v)=>[m[0]*v[0]+m[4]*v[1]+m[8]*v[2]+m[12]*v[3],m[1]*v[0]+m[5]*v[1]+m[9]*v[2]+m[13]*v[3],
+m[2]*v[0]+m[6]*v[1]+m[10]*v[2]+m[14]*v[3],m[3]*v[0]+m[7]*v[1]+m[11]*v[2]+m[15]*v[3]];
+
+// ---------------------------------------------------------------- AR session
+const VOX=0.1;let xr=null,refSpace=null,viewerSpace=null,hitSrc=null,gl=null,lastHit=null;
+let poseBuf=[],voxBuf=new Map(),lastDepth=0,lastFlush=0,lastPlanes=0,sent={poses:0,vox:0},depthOk=false,planesOk=false,depthWarned=false;
+async function checkSupport(){
+  if(!navigator.xr){$("support").textContent="WebXR is not available in this browser. Open this page in Chrome on the phone.";$("start").disabled=true;return}
+  const ok=await navigator.xr.isSessionSupported("immersive-ar").catch(()=>false);
+  $("support").textContent=ok?"AR ready (ARCore). Tap Start, then walk slowly around the room pointing the camera at walls, floor and furniture.":
+   "Chrome reports AR is not supported here. Check that Google Play Services for AR is installed and up to date.";
+  $("start").disabled=!ok}
+async function startAR(){
+  const opts={requiredFeatures:["hit-test"],optionalFeatures:["local-floor","dom-overlay","depth-sensing","plane-detection","anchors"],
+    domOverlay:{root:$("ov")},depthSensing:{usagePreference:["cpu-optimized"],dataFormatPreference:["luminance-alpha","float32"]}};
+  try{xr=await navigator.xr.requestSession("immersive-ar",opts)}catch(e){$("support").textContent="AR failed to start: "+e.message;return}
+  $("ov").classList.add("on");
+  const canvas=document.createElement("canvas");gl=canvas.getContext("webgl",{xrCompatible:true,alpha:true});
+  await xr.updateRenderState({baseLayer:new XRWebGLLayer(xr,gl)});
+  try{refSpace=await xr.requestReferenceSpace("local-floor")}catch{refSpace=await xr.requestReferenceSpace("local")}
+  viewerSpace=await xr.requestReferenceSpace("viewer");
+  hitSrc=await xr.requestHitTestSource({space:viewerSpace}).catch(()=>null);
+  depthOk=!!(xr.enabledFeatures&&xr.enabledFeatures.includes("depth-sensing"));
+  planesOk=!!(xr.enabledFeatures&&xr.enabledFeatures.includes("plane-detection"));
+  xr.addEventListener("end",()=>{$("ov").classList.remove("on");flush(true);xr=null;hitSrc=null;refresh()});
+  xr.requestAnimationFrame(onFrame)}
+function onFrame(t,frame){
+  if(!xr)return;xr.requestAnimationFrame(onFrame);
+  const layer=xr.renderState.baseLayer;gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
+  const pose=frame.getViewerPose(refSpace);if(!pose)return;
+  const m=pose.transform.matrix,now=Date.now()/1000,yaw=Math.atan2(-m[8],m[10]);
+  poseBuf.push([+now.toFixed(3),+m[12].toFixed(3),+m[13].toFixed(3),+m[14].toFixed(3),+yaw.toFixed(3)]);
+  livePose={x:m[12],z:m[14],yaw};
+  lastHit=null;
+  if(hitSrc){const r=frame.getHitTestResults(hitSrc);if(r.length){const hp=r[0].getPose(refSpace);if(hp)lastHit=hp.transform.position}}
+  $("cross").classList.toggle("hit",!!lastHit);
+  if(depthOk&&t-lastDepth>300){lastDepth=t;sampleDepth(frame,pose)}
+  if(planesOk&&t-lastPlanes>3000){lastPlanes=t;sendPlanes(frame)}
+  if(t-lastFlush>1000){lastFlush=t;flush(false)}
+  $("ovtop").textContent=`Walk slowly · path ${sent.poses+poseBuf.length} pts · depth ${depthOk?(sent.vox+voxBuf.size)+" voxels":"not available"}`+
+    ` · planes ${planesOk?"on":"off"} · Wi-Fi placed ${STATE&&STATE.map?STATE.map.wifi_placed:0}`+(lastHit?" · aim ok":" · aim at a surface to tag")}
+function sampleDepth(frame,pose){
+  for(const v of pose.views){let d;
+    try{d=frame.getDepthInformation(v)}catch(e){if(!depthWarned){depthWarned=true;console.warn(e)}return}
+    if(!d)continue;const ip=inv4(v.projectionMatrix);if(!ip)continue;const vm=v.transform.matrix;
+    for(let gy=1;gy<12;gy++)for(let gx=1;gx<16;gx++){const u=gx/16,w=gy/12;let z;
+      try{z=d.getDepthInMeters(u,w)}catch{continue}
+      if(!(z>0.3&&z<5))continue;                        // ARCore depth is reliable ~0.3-5 m
+      const c=mul(ip,[u*2-1,(1-w)*2-1,-1,1]);const dir=[c[0]/c[3],c[1]/c[3],c[2]/c[3]];
+      const s=z/-dir[2];const p=mul(vm,[dir[0]*s,dir[1]*s,-z,1]);
+      const k=Math.floor(p[0]/VOX)+","+Math.floor(p[1]/VOX)+","+Math.floor(p[2]/VOX);voxBuf.set(k,1)}
+    break}}
+function sendPlanes(frame){const ps=frame.detectedPlanes;if(!ps||!ps.size)return;const out=[];let i=0;
+  for(const pl of ps){const pp=frame.getPose(pl.planeSpace,refSpace);if(!pp)continue;const m=pp.transform.matrix;
+    const poly=pl.polygon.slice(0,64).map(q=>{const w=mul(m,[q.x,q.y,q.z,1]);return[+w[0].toFixed(3),+w[2].toFixed(3)]});
+    out.push({id:"p"+(pl.__id||(pl.__id=++i+"-"+Math.random().toString(36).slice(2,7))),orientation:pl.orientation==="vertical"?"vertical":"horizontal",y:+m[13].toFixed(3),polygon:poly})}
+  if(out.length)post("/api/v1/map/planes",{planes:out}).catch(()=>{})}
+async function flush(final){
+  if(poseBuf.length){const b=poseBuf;poseBuf=[];sent.poses+=b.length;post("/api/v1/map/pose",{poses:b}).catch(()=>{poseBuf=b.concat(poseBuf)})}
+  if(voxBuf.size){const b=[...voxBuf.keys()].map(k=>k.split(",").map(Number));voxBuf=new Map();sent.vox+=b.length;
+    for(let i=0;i<b.length;i+=15000)post("/api/v1/map/voxels",{voxels:b.slice(i,i+15000)}).catch(()=>{})}}
+$("tag").onclick=async()=>{if(!lastHit){$("ovtop").textContent="Aim the circle at a surface first (it turns green).";return}
+  const o={kind:$("kind").value,x:lastHit.x,y:lastHit.y,z:lastHit.z,yaw:livePose?livePose.yaw:0};
+  const r=await post("/api/v1/map/object",o).catch(()=>null);
+  $("ovtop").textContent=r&&r.ok?"Tagged "+o.kind:"Tag failed"};
+$("stop").onclick=()=>xr&&xr.end();
+$("start").onclick=startAR;
+
+// ---------------------------------------------------------------- top-down rendering
+function bounds(){const pts=[];if(!MAP)return null;
+  (MAP.track||[]).forEach(r=>pts.push([r[1],r[3]]));(MAP.objects||[]).forEach(o=>pts.push([o.x,o.z]));
+  const hm=MAP.heightmap||{};(hm.cols||[]).forEach(c=>pts.push([c[0]*hm.vox_m,c[1]*hm.vox_m]));
+  if(!pts.length)return{x0:-3,z0:-3,x1:3,z1:3};
+  let x0=Infinity,z0=Infinity,x1=-Infinity,z1=-Infinity;pts.forEach(([x,z])=>{x0=Math.min(x0,x);x1=Math.max(x1,x);z0=Math.min(z0,z);z1=Math.max(z1,z)});
+  return{x0:x0-1,z0:z0-1,x1:x1+1,z1:z1+1}}
+function el(tag,attrs,parent,text){const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(text!=null)e.textContent=text;parent&&parent.appendChild(e);return e}
+function rssiColor(r){const t=Math.max(0,Math.min(1,(r+90)/60));return`hsl(${Math.round(240-t*200)} 80% ${45+t*10}%)`}
+function render(){
+  const svg=$("map");svg.innerHTML="";if(!MAP){el("text",{x:10,y:24,fill:css("--mut")},svg,"Loading…");return}
+  if(!view)view=bounds();const W=svg.clientWidth,H=svg.clientHeight,b=view;
+  const sc=Math.min(W/(b.x1-b.x0),H/(b.z1-b.z0)),ox=(W-(b.x1-b.x0)*sc)/2,oz=(H-(b.z1-b.z0)*sc)/2;
+  const X=x=>ox+(x-b.x0)*sc,Z=z=>oz+(z-b.z0)*sc;
+  // 1 m grid
+  const g=el("g",{stroke:css("--line"),"stroke-width":1},svg);
+  for(let x=Math.ceil(b.x0);x<=b.x1;x++)el("line",{x1:X(x),y1:0,x2:X(x),y2:H},g);
+  for(let z=Math.ceil(b.z0);z<=b.z1;z++)el("line",{x1:0,y1:Z(z),x2:W,y2:Z(z)},g);
+  el("text",{x:W-58,y:H-8,fill:css("--mut"),"font-size":11},svg,"grid 1 m");
+  if($("layer").value==="radio"&&RADIO){const c=MAP.cell_m||0.5;
+    RADIO.cells.forEach(k=>{const r=el("rect",{x:X(k.ix*c),y:Z(k.iz*c),width:c*sc,height:c*sc,fill:rssiColor(k.rssi),opacity:.75},svg);
+      el("title",{},r,`${k.rssi} dBm · ${k.n} samples`)})}
+  // depth heightmap
+  const hm=MAP.heightmap||{},v=hm.vox_m||0.1,col={wall:css("--wall"),furniture:css("--furn"),low:css("--low")};
+  const hg=el("g",{},svg);(hm.cols||[]).forEach(c=>{const r=el("rect",{x:X(c[0]*v),y:Z(c[1]*v),width:v*sc+.5,height:v*sc+.5,fill:col[c[4]],opacity:c[4]==="low"?.5:.9},hg);
+    if(sc>60)el("title",{},r,`${c[4]} · top ${c[2]} m`)});
+  // planes
+  (MAP.planes||[]).forEach(p=>el("polygon",{points:p.polygon.map(q=>X(q[0])+","+Z(q[1])).join(" "),fill:p.orientation==="horizontal"?"rgba(57,217,138,.08)":"none",
+    stroke:p.orientation==="vertical"?css("--wall"):css("--acc"),"stroke-width":p.orientation==="vertical"?3:1,"stroke-dasharray":p.orientation==="vertical"?"":"4 3"},svg));
+  // path
+  const tr=MAP.track||[];if(tr.length>1)el("polyline",{points:tr.map(r=>X(r[1])+","+Z(r[3])).join(" "),fill:"none",stroke:css("--acc"),"stroke-width":2,opacity:.8},svg);
+  // tagged objects
+  (MAP.objects||[]).forEach(o=>{const gx=el("g",{transform:`translate(${X(o.x)},${Z(o.z)})`},svg);
+    el("circle",{r:7,fill:css("--card"),stroke:css("--fg"),"stroke-width":2},gx);
+    let label=o.kind.replace("_"," ");
+    const bed=STATE&&STATE.bed;if(o.kind==="bed"&&bed){const h=bed.heart&&bed.heart.bpm,br=bed.breathing&&bed.breathing.bpm;if(h||br)label+=` ♥${h||"–"} ~${br||"–"}`}
+    el("text",{x:10,y:4,fill:css("--fg"),"font-size":12,"font-weight":600},gx,label)});
+  // signal objects: estimated AP positions
+  (MAP.aps||[]).slice(0,40).forEach(a=>{const r=Math.max(4,Math.min(16,(a.max_rssi+95)/4));
+    const s=a.key===selAP,c=el("circle",{cx:X(a.est_x),cy:Z(a.est_z),r,fill:"none",stroke:s?css("--warn"):css("--mut"),"stroke-width":s?3:1.5},svg);
+    el("title",{},c,`${a.label||a.key} · max ${a.max_rssi} dBm · est ±several m`)});
+  // phone: live AR pose, else Wi-Fi estimate
+  const pe=STATE&&STATE.map&&STATE.map.phone_estimate;
+  if(STATE&&STATE.map&&STATE.map.ar_live&&livePose){tri(svg,X(livePose.x),Z(livePose.z),livePose.yaw,css("--acc"))}
+  else if(pe){el("circle",{cx:X(pe.x),cy:Z(pe.z),r:Math.max(6,pe.spread_m*sc),fill:"rgba(245,183,59,.18)",stroke:css("--warn")},svg);tri(svg,X(pe.x),Z(pe.z),0,css("--warn"))}
+  // room-level presence (no position): tint the frame
+  const pres=STATE&&STATE.presence;$("mapwrap").style.boxShadow=pres?`inset 0 0 0 3px ${css("--ok")}`:"none"}
+function tri(svg,x,y,yaw,c){el("polygon",{points:"0,-9 6,7 -6,7",fill:c,transform:`translate(${x},${y}) rotate(${yaw*180/Math.PI})`},svg)}
+
+function lists(){
+  const aps=$("aps");aps.innerHTML="";(MAP&&MAP.aps||[]).forEach(a=>{const d=document.createElement("div");d.className=a.key===selAP?"sel":"";
+    d.innerHTML="";const l=document.createElement("span");l.textContent=(a.label||a.key.replace(/^(scan|conn):/,""))+(a.freq?` · ${a.freq>4000?"5":"2.4"} GHz`:"");
+    const r=document.createElement("span");r.className="small";r.textContent=`${a.max_rssi} dBm · ${a.cells} cells`;d.append(l,r);
+    d.onclick=async()=>{selAP=a.key;$("layer").value="radio";RADIO=await (await fetch("/api/v1/map/radio?key="+encodeURIComponent(a.key))).json();lists();render()};aps.appendChild(d)});
+  if(!aps.children.length)aps.textContent="No Wi-Fi placed yet: walk with AR running while `wewalla up` is on.";
+  const ob=$("objs");ob.innerHTML="";(MAP&&MAP.objects||[]).forEach(o=>{const d=document.createElement("div");
+    const l=document.createElement("span");l.textContent=o.kind.replace("_"," ");const r=document.createElement("span");r.className="small";
+    r.textContent=`(${o.x.toFixed(1)}, ${o.z.toFixed(1)}) m · tap to delete`;d.append(l,r);
+    d.onclick=async()=>{if(d.dataset.arm){await post("/api/v1/map/object/delete",{id:o.id});refresh()}else{d.dataset.arm=1;r.textContent="tap again to delete"}};ob.appendChild(d)});
+  if(!ob.children.length)ob.textContent="None yet: in AR, aim at something and tap Tag here."}
+async function refresh(){try{MAP=await (await fetch("/api/v1/map")).json()}catch{return}
+  const c=MAP.counts||{};$("counts").textContent=`${c.poses||0} path points · ${c.voxels||0} depth voxels · ${c.planes||0} planes · ${c.objects||0} tagged · Wi-Fi: ${c.wifi_placed||0} readings placed in ${c.cells||0} cells`;
+  if(selAP&&$("layer").value==="radio")RADIO=await (await fetch("/api/v1/map/radio?key="+encodeURIComponent(selAP))).json();
+  lists();render()}
+$("fit").onclick=()=>{view=bounds();render()};
+$("layer").onchange=()=>render();
+$("reset").onclick=async()=>{const b=$("reset");if(!b.dataset.arm){b.dataset.arm=1;b.textContent="Tap again: erase map";setTimeout(()=>{delete b.dataset.arm;b.textContent="New map"},4000);return}
+  await post("/api/v1/map/reset",{});delete b.dataset.arm;b.textContent="New map";view=null;refresh()};
+// live state (presence, bed vitals, phone estimate)
+const es=new EventSource("/events?token="+TOKEN);
+es.onmessage=e=>{STATE=JSON.parse(e.data);const m=STATE.map||{};
+  $("live").textContent=(STATE.presence==null?"presence –":STATE.presence?"someone present (room-level)":"room clear")+(m.ar_live?" · AR live":"");if(!xr)render()};
+addEventListener("resize",render);
+checkSupport();refresh();setInterval(()=>{if(!xr)refresh()},4000);
+</script></body></html>

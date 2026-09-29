@@ -1,0 +1,224 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Wewalla 3D Model</title>
+<style>
+:root{--bg:#0d1014;--fg:#e8ecf1;--mut:#8b96a5;--card:#161c24;--line:#28303a;--acc:#39d98a;--warn:#f5b73b;--bad:#ff5d6c;--btn-fg:#06120b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif;overflow:hidden}
+#c{position:fixed;inset:0;display:block;touch-action:none}
+.panel{position:fixed;background:rgba(18,24,32,.86);backdrop-filter:blur(6px);border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+#top{top:max(8px,env(safe-area-inset-top));left:8px;right:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+#top h1{font-size:15px;margin:0}#top a{color:var(--acc);text-decoration:none;font-size:12px}
+#stat{margin-left:auto;font-size:12px;color:var(--mut)}
+#tools{bottom:max(8px,env(safe-area-inset-bottom));left:8px;right:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+button,select{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:9px 11px;min-height:42px;font:inherit;cursor:pointer}
+button.on{background:var(--acc);color:var(--btn-fg);border-color:var(--acc);font-weight:600}
+button.danger{border-color:var(--bad);color:var(--bad)}
+.chip{font-size:12px;color:var(--mut);padding:0 4px}
+#hint{position:fixed;left:50%;transform:translateX(-50%);bottom:64px;background:rgba(0,0,0,.6);padding:6px 12px;border-radius:8px;font-size:12px;pointer-events:none;opacity:0;transition:opacity .3s}
+#hint.show{opacity:1}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="top" class="panel"><h1>Wewalla 3D</h1><a href="/">dashboard</a><a href="/map">AR map</a>
+<span id="stat">connecting…</span></div>
+<div id="tools" class="panel">
+<button id="orbit" class="on" title="Rotate/zoom">Look</button>
+<select id="kind" title="Furniture to place">
+<option value="">Place…</option><option>bed</option><option>sofa</option><option>table</option><option>desk</option>
+<option>chair</option><option>wardrobe</option><option>tv</option><option>door</option><option>window</option>
+<option>corner</option><option>router</option></select>
+<button id="move">Move</button>
+<button id="del" class="danger">Delete</button>
+<span class="chip" id="counts"></span>
+<button id="reset" class="danger" style="margin-left:auto">Clear</button>
+</div>
+<div id="hint"></div>
+
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+"three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+const TOKEN="__TOKEN__";
+const post=(p,b)=>fetch(p,{method:"POST",headers:{"X-Wewalla-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify(b)});
+const $=id=>document.getElementById(id);
+const hint=t=>{const h=$("hint");h.textContent=t;h.classList.add("show");clearTimeout(h._t);h._t=setTimeout(()=>h.classList.remove("show"),2200)};
+
+// furniture: [w, h, d] metres, colour, y sits on floor
+const FURN={
+  bed:[1.6,0.5,2.0,0x4f7cff], sofa:[2.0,0.8,0.9,0x8a5cf6], table:[1.2,0.75,0.8,0xb0895a],
+  desk:[1.4,0.75,0.7,0xb0895a], chair:[0.5,0.9,0.5,0x9aa7b6], wardrobe:[1.2,2.0,0.6,0x6b5030],
+  tv:[1.2,0.7,0.1,0x222831], door:[0.9,2.0,0.1,0x39d98a], window:[1.0,1.0,0.1,0x63b3ff],
+  corner:[0.15,0.15,0.15,0xff5d6c], router:[0.2,0.15,0.2,0xf5b73b], other:[0.5,0.5,0.5,0x8b96a5]};
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x05070b);
+scene.fog=new THREE.Fog(0x05070b,16,46);
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.05,200);
+camera.position.set(5,6,7);
+const renderer=new THREE.WebGLRenderer({canvas:$("c"),antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;controls.maxPolarAngle=Math.PI*0.49;controls.target.set(0,0.5,0);
+const composer=new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene,camera));
+const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),0.9,0.6,0.18);
+composer.addPass(bloom);
+
+scene.add(new THREE.HemisphereLight(0xbfd4ff,0x202830,1.1));
+const key=new THREE.DirectionalLight(0xffffff,1.2);key.position.set(6,12,4);scene.add(key);
+// invisible physical floor for raycasting (placement)
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(80,80),new THREE.MeshBasicMaterial({visible:false}));
+floor.rotation.x=-Math.PI/2;scene.add(floor);
+// holographic fluid grid: glowing lines with a radial scan pulse from the presence point
+const gridMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:{
+  uTime:{value:0},uScan:{value:new THREE.Vector2(0,0)},uMotion:{value:0},uColor:{value:new THREE.Color(0x39d98a)}},
+  vertexShader:`varying vec3 vP;void main(){vP=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+  fragmentShader:`uniform float uTime,uMotion;uniform vec2 uScan;uniform vec3 uColor;varying vec3 vP;
+  float gline(vec2 p){vec2 g=abs(fract(p)-0.5)/fwidth(p);return 1.0-min(min(g.x,g.y),1.0);}
+  void main(){vec2 uv=vP.xy;
+    float fine=gline(uv)*0.35+gline(uv*0.2)*0.5;
+    float d=distance(uv,uScan);
+    float ring=smoothstep(0.9,0.0,abs(d-mod(uTime*2.2,14.0)))*0.8;      // outward scan pulse
+    float breathe=0.6+0.4*sin(uTime*1.5-d*0.6);
+    float glow=fine*breathe+ring*(0.5+uMotion);
+    float fade=smoothstep(34.0,4.0,length(uv));
+    vec3 col=mix(uColor,vec3(0.45,0.75,1.0),0.35+0.3*sin(uTime*0.3));
+    gl_FragColor=vec4(col*glow*fade,glow*fade);}`});
+const gridGeo=new THREE.PlaneGeometry(80,80,1,1);
+const grid=new THREE.Mesh(gridGeo,gridMat);grid.rotation.x=-Math.PI/2;grid.position.y=0.004;scene.add(grid);
+
+// groups we rebuild from map data
+const gWalls=new THREE.Group(),gFurn=new THREE.Group(),gPath=new THREE.Group(),gAP=new THREE.Group();
+scene.add(gWalls,gFurn,gPath,gAP);
+
+// live presence "motion volume" — a soft column that appears when someone is present
+const presMat=new THREE.MeshStandardMaterial({color:0x39d98a,transparent:true,opacity:0.32,emissive:0x1f6b45,emissive_intensity:0.6});
+const presence=new THREE.Mesh(new THREE.CylinderGeometry(0.35,0.5,1.7,20),presMat);
+presence.position.y=0.85;presence.visible=false;scene.add(presence);
+const ring=new THREE.Mesh(new THREE.RingGeometry(0.5,0.62,32),
+  new THREE.MeshBasicMaterial({color:0x39d98a,transparent:true,opacity:0.5,side:THREE.DoubleSide}));
+ring.rotation.x=-Math.PI/2;ring.position.y=0.01;ring.visible=false;scene.add(ring);
+
+const clear=g=>{while(g.children.length){const c=g.children.pop();c.geometry&&c.geometry.dispose();c.material&&c.material.dispose&&c.material.dispose();}};
+function label(text,x,y,z,color){
+  const cv=document.createElement("canvas");cv.width=256;cv.height=64;const g=cv.getContext("2d");
+  g.font="bold 30px system-ui";g.fillStyle=color||"#e8ecf1";g.textAlign="center";g.fillText(text,128,42);
+  const tx=new THREE.CanvasTexture(cv);const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tx,transparent:true,depthTest:false}));
+  sp.position.set(x,y,z);sp.scale.set(1.4,0.35,1);return sp;}
+
+let objects=[],selId=null,mode="look";
+const furnMeshes=new Map();
+function rebuild(map){
+  // walls from vertical AR planes; else a shell from bounds
+  clear(gWalls);
+  const vert=(map.planes||[]).filter(p=>p.orientation==="vertical");
+  if(vert.length){
+    for(const p of vert){const pts=p.polygon;for(let i=0;i<pts.length-1;i++){
+      const [x1,z1]=pts[i],[x2,z2]=pts[i+1];const dx=x2-x1,dz=z2-z1,len=Math.hypot(dx,dz);if(len<0.1)continue;
+      const w=new THREE.Mesh(new THREE.BoxGeometry(len,2.4,0.06),
+        new THREE.MeshStandardMaterial({color:0x8b98a8,transparent:true,opacity:0.35,roughness:1}));
+      w.position.set((x1+x2)/2,1.2,(z1+z2)/2);w.rotation.y=-Math.atan2(dz,dx);gWalls.add(w);}}
+  }
+  // furniture
+  clear(gFurn);furnMeshes.clear();
+  objects=map.objects||[];
+  for(const o of objects){const f=FURN[o.kind]||FURN.other;
+    const m=new THREE.Mesh(new THREE.BoxGeometry(f[0],f[1],f[2]),
+      new THREE.MeshStandardMaterial({color:f[3],roughness:0.7,metalness:0.1,
+        emissive:o.id===selId?0x2a2a00:0x000000,emissive_intensity:0.5}));
+    m.position.set(o.x,f[1]/2,o.z);m.rotation.y=o.yaw||0;m.userData.id=o.id;m.userData.kind=o.kind;
+    gFurn.add(m);furnMeshes.set(o.id,m);
+    gFurn.add(label(o.kind.replace("_"," "),o.x,f[1]+0.25,o.z));}
+  // AR path
+  clear(gPath);const tr=map.track||[];
+  if(tr.length>1){const pts=tr.map(r=>new THREE.Vector3(r[1],0.03,r[3]));
+    gPath.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({color:0x39d98a,transparent:true,opacity:0.55})));}
+  // access points (estimated) as floating markers
+  clear(gAP);
+  for(const a of (map.aps||[]).slice(0,30)){
+    const s=new THREE.Mesh(new THREE.SphereGeometry(0.12,12,12),
+      new THREE.MeshStandardMaterial({color:0xf5b73b,emissive:0x5a4300,emissive_intensity:0.8}));
+    s.position.set(a.est_x,2.2,a.est_z);gAP.add(s);
+    gAP.add(label(a.label||"AP",a.est_x,2.5,a.est_z,"#f5b73b"));}
+  $("counts").textContent=`${objects.length} objects · ${(map.aps||[]).length} APs · ${(map.planes||[]).length} planes`;
+}
+
+// place / move / delete via raycast to the floor
+const ray=new THREE.Raycaster(),ndc=new THREE.Vector2();
+function floorHit(ev){const r=renderer.domElement.getBoundingClientRect();
+  ndc.x=((ev.clientX-r.left)/r.width)*2-1;ndc.y=-((ev.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(ndc,camera);const hit=ray.intersectObject(floor);return hit[0]?hit[0].point:null;}
+function pickFurn(ev){const r=renderer.domElement.getBoundingClientRect();
+  ndc.x=((ev.clientX-r.left)/r.width)*2-1;ndc.y=-((ev.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(ndc,camera);const hit=ray.intersectObjects(gFurn.children.filter(c=>c.userData.id));return hit[0]?hit[0].object:null;}
+
+let dragging=null;
+renderer.domElement.addEventListener("pointerdown",async ev=>{
+  if(mode==="place"){const kind=$("kind").value;if(!kind)return;const p=floorHit(ev);if(!p)return;
+    await post("/api/v1/map/object",{kind,x:+p.x.toFixed(2),z:+p.z.toFixed(2),yaw:0});hint("placed "+kind);load();return;}
+  if(mode==="delete"){const m=pickFurn(ev);if(m){await post("/api/v1/map/object/delete",{id:m.userData.id});hint("deleted");load();}return;}
+  if(mode==="move"){const m=pickFurn(ev);if(m){dragging=m;selId=m.userData.id;controls.enabled=false;}return;}
+});
+renderer.domElement.addEventListener("pointermove",ev=>{if(dragging){const p=floorHit(ev);if(p){dragging.position.x=p.x;dragging.position.z=p.z;}}});
+renderer.domElement.addEventListener("pointerup",async ()=>{if(dragging){
+  await post("/api/v1/map/object",{kind:dragging.userData.kind,x:+dragging.position.x.toFixed(2),z:+dragging.position.z.toFixed(2),yaw:dragging.rotation.y});
+  dragging=null;controls.enabled=true;hint("moved");load();}});
+
+function setMode(m){mode=m;controls.enabled=(m==="look");
+  for(const b of ["orbit","move","del"])$(b).classList.remove("on");
+  if(m==="look")$("orbit").classList.add("on");if(m==="move")$("move").classList.add("on");if(m==="delete")$("del").classList.add("on");
+  $("kind").style.outline=m==="place"?"2px solid var(--acc)":"none";}
+$("orbit").onclick=()=>setMode("look");
+$("move").onclick=()=>setMode(mode==="move"?"look":"move");
+$("del").onclick=()=>setMode(mode==="delete"?"look":"delete");
+$("kind").onchange=()=>setMode($("kind").value?"place":"look");
+$("reset").onclick=async()=>{const b=$("reset");if(!b.dataset.a){b.dataset.a=1;b.textContent="Sure?";setTimeout(()=>{b.dataset.a="";b.textContent="Clear"},3000);return;}
+  await post("/api/v1/map/reset",{});b.dataset.a="";b.textContent="Clear";load();};
+
+async function load(){try{const m=await (await fetch("/api/v1/map")).json();rebuild(m);}catch(e){}}
+
+// live presence + motion + bed vitals
+let motion=0,present=false,estimate=null,bedHeart=null,arLive=false;
+const es=new EventSource("/events?token="+TOKEN);
+es.onopen=()=>$("stat").textContent="live";
+es.onerror=()=>$("stat").textContent="reconnecting…";
+es.onmessage=e=>{const s=JSON.parse(e.data);
+  present=s.presence===true;motion=s.motion||0;
+  const m=s.map||{};arLive=!!m.ar_live;estimate=m.phone_estimate||null;
+  bedHeart=(s.bed&&s.bed.heart&&s.bed.heart.bpm)||null;
+  $("stat").textContent=(present?"● present":s.presence===false?"○ clear":"– warming")+
+    ` · motion ${motion.toFixed(2)}`+(bedHeart?` · ♥${bedHeart}`:"")+(arLive?" · AR live":"");};
+
+let bedPulse=0;
+function animate(t){requestAnimationFrame(animate);
+  controls.update();
+  const px=estimate?estimate.x:0,pz=estimate?estimate.z:0;
+  gridMat.uniforms.uTime.value=t/1000;
+  gridMat.uniforms.uMotion.value=present?motion:0;
+  gridMat.uniforms.uScan.value.set(px,pz);
+  gridMat.uniforms.uColor.value.setHSL(present?0.38-motion*0.28:0.55,0.8,0.55);
+  // presence volume: visible when present, sits at wifi estimate (else scene centre), pulses with motion
+  presence.visible=ring.visible=present;
+  if(present){const px=estimate?estimate.x:0,pz=estimate?estimate.z:0;
+    presence.position.x=ring.position.x=px;presence.position.z=ring.position.z=pz;
+    const pulse=0.85+0.15*Math.sin(t/220);const s=1+motion*0.8;
+    presence.scale.set(s,pulse,s);presMat.opacity=0.18+motion*0.5;
+    const col=new THREE.Color().setHSL(0.38-motion*0.38,0.75,0.55);presMat.color.copy(col);ring.material.color.copy(col);
+    ring.scale.setScalar(1+0.3*Math.sin(t/300));}
+  // bed heartbeat: pulse the bed mesh at the measured rate
+  if(bedHeart){const bed=objects.find(o=>o.kind==="bed");const m=bed&&furnMeshes.get(bed.id);
+    if(m){const beat=1+0.06*Math.max(0,Math.sin(t/1000*(bedHeart/60)*Math.PI*2));m.scale.setScalar(beat);m.material.emissive.setHex(0x5a1620);m.material.emissive_intensity=beat-0.9;}}
+  composer.render();}
+addEventListener("resize",()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);});
+load();setInterval(load,5000);animate(0);
+</script></body></html>

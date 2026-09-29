@@ -1,0 +1,95 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Wewalla</title>
+<style>
+:root{--bg:#0f1216;--fg:#e8ecf1;--mut:#8b96a5;--card:#1a2028;--line:#2a323d;--ok:#39d98a;--warn:#f5b73b;--bad:#ff5d6c;--acc:#39d98a;--btn-fg:#06120b}
+@media(prefers-color-scheme:light){:root{--bg:#f4f6f8;--fg:#141a22;--mut:#5b6673;--card:#fff;--line:#dde2e8;--ok:#138a52;--warn:#a86a00;--bad:#c62f3d;--acc:#138a52;--btn-fg:#fff}}
+*{box-sizing:border-box}
+body{margin:0;padding:max(12px,env(safe-area-inset-top)) 12px max(12px,env(safe-area-inset-bottom));background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif;max-width:760px;margin-inline:auto}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:4px}
+h1{font-size:18px;margin:0}
+.badge{display:inline-block;padding:2px 8px;border-radius:9px;font-size:12px;border:1px solid currentColor;color:var(--warn)}
+.badge.real{color:var(--ok)}
+.conn{margin-left:auto;font-size:12px;color:var(--mut);display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mut)}.dot.live{background:var(--ok)}.dot.down{background:var(--bad)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+.k{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.v{font-size:28px;font-weight:650;font-variant-numeric:tabular-nums}
+.v.on{color:var(--ok)}.v.off{color:var(--mut)}
+.small{font-size:12px;color:var(--mut)}
+.meter{height:6px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:6px}
+.meter>i{display:block;height:100%;width:0;background:var(--acc);transition:width .4s}
+.meter.low>i{background:var(--bad)}.meter.medium>i{background:var(--warn)}
+.chart{position:relative}
+canvas{display:block;width:100%;height:120px;background:var(--card);border:1px solid var(--line);border-radius:12px}
+.legend{display:flex;gap:12px;font-size:11px;color:var(--mut);margin:4px 2px 0}
+button{background:var(--acc);color:var(--btn-fg);border:0;border-radius:10px;padding:10px 14px;min-height:44px;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+details{margin-top:8px}summary{cursor:pointer;color:var(--mut);font-size:12px}
+code{font-size:11px;word-break:break-all;color:var(--mut)}
+</style></head><body>
+<header><h1>Wewalla</h1><span class="badge" id="kind">…</span>
+<span class="conn"><a href="/map" style="color:var(--acc);text-decoration:none">Room map →</a>
+<a href="/3d" style="color:var(--acc);text-decoration:none">3D →</a>
+<span class="dot" id="dot"></span><span id="connt">connecting</span></span></header>
+<div class="grid">
+<div class="card"><div class="k">Presence</div><div class="v" id="pres">–</div><div class="small" id="state"></div></div>
+<div class="card"><div class="k">Motion</div><div class="v" id="mot">–</div><div class="meter"><i id="motm"></i></div></div>
+<div class="card"><div class="k">Confidence</div><div class="v" id="conf">–</div><div class="meter" id="confm"><i></i></div><div class="small" id="confw" title="Heuristic score of how well the inputs suit the detector. Not a measured accuracy.">heuristic, not measured</div></div>
+<div class="card"><div class="k" id="brk">Breathing (BPM)</div><div class="v" id="br">–</div><div class="small" id="brw"></div></div>
+<div class="card"><div class="k" id="hrk">Heart (experimental)</div><div class="v" id="hr">–</div><div class="small" id="hrw"></div></div>
+</div>
+<div class="chart"><canvas id="c" aria-label="Motion over the last two minutes"></canvas>
+<div class="legend"><span>motion, last 2 min</span><span>┄ presence on 0.5</span><span>┄ clear 0.3</span></div></div>
+<p class="small" id="q"></p>
+<p><button id="cal">Calibrate empty room (60 s)</button> <span class="small" id="calm"></span></p>
+<p class="small">Derived RSSI/RTT is not CSI. “Bed sensor” readings come from the phone’s accelerometer on the mattress (contact, not Wi-Fi). Vitals show “–” whenever the data cannot support them; the reason is shown. Not a medical device.</p>
+<details><summary>Source details</summary><code id="src"></code></details>
+<script>
+const TOKEN="__TOKEN__",$=id=>document.getElementById(id),hist=[],N=120,ON=0.5,OFF=0.3;
+const REASON={insufficient_update_rate:"source updates too slowly",unsupported_by_source:"needs real CSI",
+subject_moving:"too much movement",phone_moving:"phone is moving",warming_up:"collecting data…",
+confirming:"confirming…",no_clear_peak:"no clear rhythm",no_signal_variance:"signal is flat",
+no_clear_rhythm:"no clear rhythm",settling_after_movement:"settling after movement…",out_of_range:"outside 40–150",
+no_data:"no sensor data"};
+const STATE={ok:"",warming_up:"warming up",no_data:"no data yet",phone_moving:"phone moving: paused",starting:"starting"};
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function draw(){const c=$("c"),r=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;
+if(c.width!==w*r||c.height!==h*r){c.width=w*r;c.height=h*r}
+const g=c.getContext("2d");g.setTransform(r,0,0,r,0,0);g.clearRect(0,0,w,h);
+const y=m=>h-6-m*(h-12);g.setLineDash([4,4]);g.lineWidth=1;
+[[ON,css("--warn")],[OFF,css("--mut")]].forEach(([t,col])=>{g.strokeStyle=col;g.beginPath();g.moveTo(0,y(t));g.lineTo(w,y(t));g.stroke()});
+g.setLineDash([]);g.strokeStyle=css("--acc");g.lineWidth=2;g.lineJoin="round";g.beginPath();let pen=false;
+hist.forEach((m,i)=>{const x=(i+N-hist.length)/(N-1)*w;if(m==null){pen=false;return}pen?g.lineTo(x,y(m)):g.moveTo(x,y(m));pen=true});g.stroke()}
+addEventListener("resize",draw);
+function vit(o,v,w){$(v).textContent=o.bpm==null?"–":o.bpm;
+$(w).textContent=o.bpm==null?(REASON[o.reason]||o.reason||""):(o.periodicity!=null?"rhythm "+o.periodicity:"snr "+o.snr)}
+function upd(s){const q=s.quality||{},kind=q.signal_kind||"…";
+$("kind").textContent=kind;$("kind").className="badge"+(kind==="real-csi"?" real":"");
+const p=$("pres");p.textContent=s.presence==null?"–":(s.presence?"Present":"Clear");p.className="v"+(s.presence==null?"":s.presence?" on":" off");
+$("state").textContent=[STATE[s.state]??s.state,s.calibrating?"calibrating":"",s.baseline&&s.baseline!=="warming_up"?s.baseline+" baseline":""].filter(Boolean).join(" · ");
+$("mot").textContent=s.motion==null?"–":s.motion.toFixed(2);$("motm").style.width=((s.motion||0)*100)+"%";
+hist.push(s.motion);if(hist.length>N)hist.shift();draw();
+const cf=s.confidence||{};$("conf").textContent=cf.level&&cf.level!=="none"?cf.level:"–";
+$("confm").className="meter "+(cf.level||"");$("confm").firstChild.style.width=((cf.score||0)*100)+"%";
+const f=cf.factors||{};$("confw").textContent=Object.keys(f).length?Object.entries(f).map(([k,v])=>k+" "+v.toFixed(2)).join(" · "):"heuristic, not measured";
+const bed=s.bed;
+// the bed accelerometer is the only heart source on phones without CSI; label where each number comes from
+if(bed){vit(bed.heart,"hr","hrw");$("hrk").textContent="Heart · bed sensor (experimental)"}
+else{if(s.heart_rate)vit(s.heart_rate,"hr","hrw");$("hrk").textContent="Heart (experimental)"}
+const bb=bed&&bed.breathing&&bed.breathing.bpm!=null&&!(s.breathing&&s.breathing.bpm!=null);
+if(bb){vit(bed.breathing,"br","brw");$("brk").textContent="Breathing · bed sensor"}
+else{if(s.breathing)vit(s.breathing,"br","brw");$("brk").textContent="Breathing (BPM)"}
+$("q").textContent=s.quality?`${q.series} series · ${q.update_hz_median} Hz median (max ${q.update_hz_max}) · phone ${q.phone_moving?"MOVING":"still"}`:"starting…";
+$("cal").disabled=!!s.calibrating;if(!s.calibrating&&s.calibration)$("calm").textContent=s.calibration.startsWith("saved")?"Calibration saved.":"Calibration failed: no data.";
+$("src").textContent=JSON.stringify(s.source||{})}
+function live(ok){$("dot").className="dot "+(ok?"live":"down");$("connt").textContent=ok?"live":"reconnecting…"}
+const es=new EventSource("/events?token="+TOKEN);es.onopen=()=>live(true);es.onerror=()=>live(false);
+es.onmessage=e=>{live(true);upd(JSON.parse(e.data))};
+$("cal").onclick=async()=>{$("cal").disabled=true;
+try{const r=await fetch("/api/v1/calibrate",{method:"POST",headers:{"X-Wewalla-Token":TOKEN,"Content-Type":"application/json"},body:'{"seconds":60}'});
+$("calm").textContent=r.ok?"Leave the room for 60 s…":"Failed ("+r.status+")";if(!r.ok)$("cal").disabled=false}
+catch(e){$("calm").textContent="Failed: not connected";$("cal").disabled=false}}
+</script></body></html>

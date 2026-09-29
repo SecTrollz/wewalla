@@ -1,0 +1,543 @@
+diff --git a/install.sh b/install.sh
+index 86abeb4..f136bc6 100755
+--- a/install.sh
++++ b/install.sh
+@@ -13,6 +13,7 @@
+ #
+ #  Profiles:
+ #    verify   - Verification only (Python + numpy + scipy)
++#    termux   - Phone-only RSSI presence mode, non-root Android (Termux)
+ #    python   - Full Python pipeline (API server, sensing, analytics)
+ #    rust     - Rust pipeline (signal processing, API, CLI)
+ #    browser  - WASM build for browser deployment
+@@ -57,6 +58,7 @@ HAS_ESPIDF=false
+ HAS_GIT=false
+ HAS_GPU=false; GPU_INFO=""
+ HAS_WIFI=false; WIFI_IFACE=""
++IS_TERMUX=false; HAS_TERMUX_API=false
+ HAS_OPENBLAS=false
+ HAS_PKGCONFIG=false
+ HAS_GCC=false
+@@ -95,6 +97,7 @@ usage() {
+     echo ""
+     echo "Profiles:"
+     echo "  verify   Verification only (Python + numpy + scipy)"
++    echo "  termux   Phone-only RSSI presence mode, non-root Android (Termux)"
+     echo "  python   Full Python pipeline (API, sensing, analytics)"
+     echo "  rust     Rust pipeline (signal processing, benchmarks)"
+     echo "  browser  WASM build for browser deployment (~10MB)"
+@@ -152,6 +155,20 @@ detect_system() {
+         warn "Unsupported OS: ${OS_RELEASE}"
+     fi
+ 
++    # Termux (Android, non-root). Termux reports as Linux via uname, so
++    # detect it explicitly via $PREFIX / $TERMUX_VERSION rather than OS_TYPE.
++    if [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux"* ]]; then
++        IS_TERMUX=true
++        ok "Termux detected (non-root Android) — Termux ${TERMUX_VERSION:-unknown}"
++        if command -v termux-wifi-scaninfo &>/dev/null; then
++            HAS_TERMUX_API=true
++            ok "termux-api installed"
++        else
++            warn "termux-api not found — run: pkg install termux-api"
++            info "Also install the Termux:API app from the same source as Termux (F-Droid recommended)"
++        fi
++    fi
++
+     # Architecture
+     ARCH="$(uname -m)"
+     ok "Architecture: ${ARCH}"
+@@ -454,6 +471,10 @@ recommend_profile() {
+     # verify is always available
+     available_profiles+=("verify")
+ 
++    if $IS_TERMUX; then
++        available_profiles+=("termux")
++    fi
++
+     if $HAS_PYTHON; then
+         available_profiles+=("python")
+     fi
+@@ -474,7 +495,9 @@ recommend_profile() {
+     fi
+ 
+     # Determine recommendation (Rust is the primary runtime)
+-    if $HAS_RUST && $HAS_CARGO; then
++    if $IS_TERMUX; then
++        recommended="termux"
++    elif $HAS_RUST && $HAS_CARGO; then
+         recommended="rust"
+     elif $HAS_PYTHON; then
+         recommended="python"
+@@ -497,6 +520,7 @@ recommend_profile() {
+         fi
+         case "$p" in
+             verify)  echo -e "    ${BOLD}${idx})${RESET} verify  - Pipeline verification only (~5 MB)${marker}" ;;
++            termux)  echo -e "    ${BOLD}${idx})${RESET} termux  - Phone-only RSSI presence mode, non-root Android (~1 MB)${marker}" ;;
+             python)  echo -e "    ${BOLD}${idx})${RESET} python  - Full Python pipeline + API server (~500 MB)${marker}" ;;
+             rust)    echo -e "    ${BOLD}${idx})${RESET} rust    - Rust pipeline with ~810x speedup (~200 MB)${marker}" ;;
+             browser) echo -e "    ${BOLD}${idx})${RESET} browser - WASM for browser deployment (~10 MB output)${marker}" ;;
+@@ -550,6 +574,9 @@ install_deps() {
+         verify)
+             install_verify_deps
+             ;;
++        termux)
++            install_termux_deps
++            ;;
+         python)
+             install_verify_deps
+             install_python_deps
+@@ -610,6 +637,40 @@ install_verify_deps() {
+     fi
+ }
+ 
++install_termux_deps() {
++    echo -e "  ${CYAN}Termux (non-root, phone-only RSSI) dependencies:${RESET}"
++
++    if ! $IS_TERMUX; then
++        warn "Not running inside Termux — this profile is meant for Termux on Android."
++        info "Continuing anyway; scripts/termux/termux_presence.py still runs anywhere Python 3 and termux-wifi-scaninfo are available."
++    fi
++
++    if ! command -v python &>/dev/null && ! command -v python3 &>/dev/null; then
++        echo "  Installing python..."
++        pkg install -y python 2>&1 | tail -3
++    else
++        ok "python already installed"
++    fi
++
++    if ! $HAS_TERMUX_API; then
++        echo "  Installing termux-api package..."
++        pkg install -y termux-api 2>&1 | tail -3
++        warn "Also install the Termux:API app (same source as Termux, e.g. F-Droid) if you haven't already."
++        warn "Then grant it Location permission in Android settings — required for WiFi scan results since Android 8."
++    else
++        ok "termux-api already installed"
++    fi
++
++    echo ""
++    ok "No heavy deps needed for this profile (stdlib-only sensor + dashboard)."
++    echo -e "  ${DIM}Reminder: this mode is RSSI-only occupancy/motion — no pose, no vitals,${RESET}"
++    echo -e "  ${DIM}no through-wall detail. Those require CSI from ESP32-S3/C6 hardware.${RESET}"
++    echo -e "  ${DIM}See scripts/termux/README.md.${RESET}"
++    echo ""
++    echo -e "  Run it with:"
++    echo -e "    ${BOLD}termux-wake-lock && python scripts/termux/termux_presence.py${RESET}"
++}
++
+ install_python_deps() {
+     echo -e "  ${CYAN}Python pipeline dependencies:${RESET}"
+     if [ -f "${SCRIPT_DIR}/requirements.txt" ]; then
+diff --git a/scripts/termux/README.md b/scripts/termux/README.md
+new file mode 100644
+index 0000000..ec8e400
+--- /dev/null
++++ b/scripts/termux/README.md
+@@ -0,0 +1,54 @@
++# Termux (non-root, phone-only) — RSSI presence mode
++
++Runs a coarse WiFi-RSSI occupancy/motion detector directly on an Android
++phone in Termux, with no root and no ESP32 hardware. This is a real,
++supported mode of this project — and also its ceiling without CSI hardware.
++
++## What this mode is
++
++RSSI (received signal strength) is what every WiFi chip reports natively,
++with no special driver support. It carries real information about
++occupancy and motion (this repo's own RSSI-only research puts it at
++retaining ~95% of full-CSI accuracy for simple occupancy/counting — see
++`examples/research-sota/04-rssi/`), but essentially none of the detail
++needed for pose, vitals, or through-wall imaging, which need per-subcarrier
++CSI.
++
++## What this mode is not
++
++It is **not** a phone-only replacement for the ESP32 CSI pipeline. No
++non-rooted Android phone can export CSI from its own WiFi radio — this is
++a hardware/driver limitation, not something fixable in this repo's code.
++The pose/vitals visualizations elsewhere in this project either come from
++real ESP32 CSI data, or — when no sensing server is connected — from the
++documented synthetic simulation fallback (see main `README.md`, Quick
++start Option 1, and `ui/mobile/README.md`'s "Offline Capable" row). That
++fallback is for UI development/demos, not a claim of phone-only sensing.
++
++## Setup
++
++```bash
++pkg install termux-api python
++# Grant Termux:API the Location permission in Android settings (required
++# by Android for WiFi scan results since Android 8), and make sure system
++# Location services are on.
++termux-wake-lock
++python scripts/termux/termux_presence.py
++```
++
++Open `http://127.0.0.1:8080` on the phone. See the script's own docstring
++and `--help` for tuning (`--interval`, `--window`, `--threshold`, `--port`).
++
++### Hotspot note
++
++If your phone's mobile hotspot is on, WiFi scanning may return nothing —
++many chipsets can't do client-mode scanning and AP-mode hotspot
++broadcasting at the same time. Sense with the hotspot off; turn it on
++afterward only if you want another device to load the dashboard at your
++phone's hotspot IP (typically `192.168.43.1:8080`).
++
++## Files
++
++- `termux_presence.py` — the sensor + built-in dashboard, stdlib-only, no
++  torch/opencv/fastapi/sqlalchemy — those are not realistically buildable
++  in Termux non-root and are not needed for this mode.
+diff --git a/scripts/termux/termux_presence.py b/scripts/termux/termux_presence.py
+new file mode 100644
+index 0000000..0256991
+--- /dev/null
++++ b/scripts/termux/termux_presence.py
+@@ -0,0 +1,347 @@
++#!/usr/bin/env python3
++"""
++termux_presence.py — Phone-only WiFi RSSI presence sensing for Termux (non-root)
++
++Companion script for the wewalla / RuView WiFi-DensePose project
++(https://github.com/SecTrollz/wewalla), adapted for non-root Termux on
++Android (built/tested against a Motorola Edge 2025 target).
++
++WHAT THIS IS
++  A standalone occupancy/motion detector using only:
++    - Termux:API's `termux-wifi-scaninfo` (no root, no ESP32 hardware)
++    - Python standard library (no torch/opencv/fastapi — nothing to compile)
++
++  It repeatedly scans visible WiFi networks, tracks RSSI (signal strength)
++  variance per BSSID over a sliding window, and flags "presence"/"motion"
++  when nearby signals wobble more than a stillness baseline — the same
++  underlying principle the wewalla repo's own RSSI-only research uses
++  (see examples/research-sota/04-rssi/ in that repo): RSSI retains most of
++  its usefulness for simple occupancy/counting, but none of the per-person
++  detail (pose, vitals) that requires real CSI from ESP32 hardware.
++
++WHAT THIS IS NOT
++  - Not through-wall pose estimation, not breathing/heart rate, not
++    per-person tracking. Those genuinely require CSI from ESP32-S3/C6
++    boards — there is no way to get that from a stock, non-rooted phone.
++  - Not usable while your own hotspot is active on chipsets that can't do
++    concurrent AP+STA WiFi scanning (common). Test this yourself — see
++    README note printed at startup.
++
++USAGE
++  pkg install termux-api python   # one-time setup
++  termux-wake-lock                # keep the session alive in background
++  python termux_presence.py [--interval 2.0] [--window 20] [--threshold 4.0] [--port 8080]
++
++Then open http://127.0.0.1:8080 in the phone's browser, or from another
++device connected to the phone's hotspot at http://<phone-hotspot-ip>:8080
++(commonly 192.168.43.1:8080 on Android tethering).
++"""
++
++from __future__ import annotations
++
++import argparse
++import json
++import statistics
++import subprocess
++import threading
++import time
++from collections import deque
++from dataclasses import dataclass, field
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from typing import Deque
++
++
++# --------------------------------------------------------------------------
++# Scanning
++# --------------------------------------------------------------------------
++
++def scan_wifi() -> list[dict]:
++    """Call termux-wifi-scaninfo and return parsed network list.
++
++    Returns [] on any failure (missing permission, hotspot radio conflict,
++    termux-api not installed, etc.) rather than raising — this script is
++    meant to keep running and reporting status even when scans fail.
++    """
++    try:
++        result = subprocess.run(
++            ["termux-wifi-scaninfo"],
++            capture_output=True,
++            text=True,
++            timeout=10,
++        )
++        if result.returncode != 0 or not result.stdout.strip():
++            return []
++        data = json.loads(result.stdout)
++        if isinstance(data, list):
++            return data
++        return []
++    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
++        return []
++
++
++def extract_rssi(network: dict) -> float | None:
++    """termux-wifi-scaninfo field names have varied across versions; check both."""
++    for key in ("rssi", "level", "levelDbm"):
++        if key in network and isinstance(network[key], (int, float)):
++            return float(network[key])
++    return None
++
++
++def network_key(network: dict) -> str:
++    bssid = network.get("bssid") or network.get("BSSID")
++    ssid = network.get("ssid") or network.get("SSID") or "?"
++    return bssid or ssid
++
++
++# --------------------------------------------------------------------------
++# Presence / motion detection
++# --------------------------------------------------------------------------
++
++@dataclass
++class NetworkTrack:
++    history: Deque[float] = field(default_factory=lambda: deque(maxlen=64))
++
++    def push(self, rssi: float) -> None:
++        self.history.append(rssi)
++
++    def variance(self) -> float | None:
++        if len(self.history) < 5:
++            return None
++        return statistics.pvariance(self.history)
++
++
++class PresenceEngine:
++    def __init__(self, window: int, threshold: float):
++        self.window = window
++        self.threshold = threshold
++        self.tracks: dict[str, NetworkTrack] = {}
++        self.lock = threading.Lock()
++        self.last_scan_ok = False
++        self.last_scan_time: float | None = None
++        self.last_error_hint = ""
++        self.presence_history: Deque[int] = deque(maxlen=120)  # last N scan cycles
++
++    def ingest(self, networks: list[dict]) -> None:
++        with self.lock:
++            self.last_scan_time = time.time()
++            self.last_scan_ok = len(networks) > 0
++            if not self.last_scan_ok:
++                self.last_error_hint = (
++                    "Empty scan result. If your hotspot is ON, this chipset "
++                    "likely can't scan while also acting as an access point — "
++                    "turn hotspot off to sense, or check Termux:API location "
++                    "permission."
++                )
++            else:
++                self.last_error_hint = ""
++
++            seen = set()
++            for net in networks:
++                rssi = extract_rssi(net)
++                if rssi is None:
++                    continue
++                key = network_key(net)
++                seen.add(key)
++                track = self.tracks.setdefault(key, NetworkTrack(deque(maxlen=self.window)))
++                if track.history.maxlen != self.window:
++                    track.history = deque(track.history, maxlen=self.window)
++                track.push(rssi)
++
++            # Drop tracks for networks no longer visible.
++            stale = [k for k in self.tracks if k not in seen]
++            for k in stale:
++                del self.tracks[k]
++
++            motion_score = self._motion_score()
++            self.presence_history.append(1 if motion_score >= self.threshold else 0)
++
++    def _motion_score(self) -> float:
++        variances = [t.variance() for t in self.tracks.values()]
++        variances = [v for v in variances if v is not None]
++        if not variances:
++            return 0.0
++        return max(variances)
++
++    def snapshot(self) -> dict:
++        with self.lock:
++            motion_score = self._motion_score()
++            present = motion_score >= self.threshold
++            recent = list(self.presence_history)
++            occupancy_pct = (
++                round(100 * sum(recent) / len(recent), 1) if recent else 0.0
++            )
++            return {
++                "ok": self.last_scan_ok,
++                "error_hint": self.last_error_hint,
++                "last_scan_time": self.last_scan_time,
++                "networks_tracked": len(self.tracks),
++                "motion_score": round(motion_score, 2),
++                "threshold": self.threshold,
++                "presence": present,
++                "recent_occupancy_pct": occupancy_pct,
++                "recent_window": len(recent),
++            }
++
++
++# --------------------------------------------------------------------------
++# Web dashboard (stdlib only — no external assets, works fully offline)
++# --------------------------------------------------------------------------
++
++PAGE_TEMPLATE = """<!doctype html>
++<html>
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <title>wewalla — Termux RSSI Presence</title>
++  <meta http-equiv="refresh" content="3">
++  <style>
++    body {{ font-family: -apple-system, sans-serif; background: #0b0f14; color: #e6edf3;
++           margin: 0; padding: 24px; }}
++    h1 {{ font-size: 20px; margin-bottom: 4px; }}
++    .sub {{ color: #8b98a5; font-size: 13px; margin-bottom: 24px; }}
++    .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 10px;
++             padding: 20px; margin-bottom: 16px; }}
++    .status {{ font-size: 15px; padding: 10px 16px; border-radius: 8px; display: inline-block; }}
++    .present {{ background: #1a3a2a; color: #3fb950; border: 1px solid #3fb950; }}
++    .idle {{ background: #21262d; color: #8b98a5; border: 1px solid #30363d; }}
++    .warn {{ background: #3a2a1a; color: #d29922; border: 1px solid #d29922; }}
++    .metric {{ display: flex; justify-content: space-between; padding: 6px 0;
++               border-bottom: 1px solid #21262d; font-size: 14px; }}
++    .metric:last-child {{ border-bottom: none; }}
++  </style>
++</head>
++<body>
++  <h1>WiFi RSSI Presence — phone-only mode</h1>
++  <div class="sub">wewalla / RuView companion — Termux non-root — auto-refreshes every 3s</div>
++
++  <div class="card">
++    <div class="status {status_class}">{status_text}</div>
++  </div>
++
++  <div class="card">
++    <div class="metric"><span>Scan OK</span><span>{ok}</span></div>
++    <div class="metric"><span>Networks tracked</span><span>{networks_tracked}</span></div>
++    <div class="metric"><span>Motion score</span><span>{motion_score} (threshold {threshold})</span></div>
++    <div class="metric"><span>Recent occupancy</span><span>{recent_occupancy_pct}% of last {recent_window} scans</span></div>
++    <div class="metric"><span>Last scan</span><span>{last_scan}</span></div>
++  </div>
++
++  {error_block}
++
++  <div class="sub">
++    This is RSSI-only coarse presence detection — no pose, no vitals, no
++    through-wall detail. Full sensing requires ESP32-S3/C6 CSI hardware.
++  </div>
++</body>
++</html>
++"""
++
++
++def render_page(snap: dict) -> str:
++    if snap["presence"]:
++        status_class, status_text = "present", "● Presence / motion detected"
++    elif not snap["ok"]:
++        status_class, status_text = "warn", "⚠ Scan not returning data"
++    else:
++        status_class, status_text = "idle", "○ Idle / no motion"
++
++    last_scan = (
++        time.strftime("%H:%M:%S", time.localtime(snap["last_scan_time"]))
++        if snap["last_scan_time"]
++        else "never"
++    )
++
++    error_block = ""
++    if snap["error_hint"]:
++        error_block = f'<div class="card warn" style="font-size:13px;">{snap["error_hint"]}</div>'
++
++    return PAGE_TEMPLATE.format(
++        status_class=status_class,
++        status_text=status_text,
++        ok=snap["ok"],
++        networks_tracked=snap["networks_tracked"],
++        motion_score=snap["motion_score"],
++        threshold=snap["threshold"],
++        recent_occupancy_pct=snap["recent_occupancy_pct"],
++        recent_window=snap["recent_window"],
++        last_scan=last_scan,
++        error_block=error_block,
++    )
++
++
++def make_handler(engine: PresenceEngine):
++    class Handler(BaseHTTPRequestHandler):
++        def log_message(self, fmt, *args):  # silence default request logging
++            pass
++
++        def do_GET(self):
++            if self.path == "/api/status":
++                body = json.dumps(engine.snapshot()).encode("utf-8")
++                self.send_response(200)
++                self.send_header("Content-Type", "application/json")
++                self.send_header("Content-Length", str(len(body)))
++                self.end_headers()
++                self.wfile.write(body)
++                return
++
++            body = render_page(engine.snapshot()).encode("utf-8")
++            self.send_response(200)
++            self.send_header("Content-Type", "text/html; charset=utf-8")
++            self.send_header("Content-Length", str(len(body)))
++            self.end_headers()
++            self.wfile.write(body)
++
++    return Handler
++
++
++# --------------------------------------------------------------------------
++# Main loop
++# --------------------------------------------------------------------------
++
++def scan_loop(engine: PresenceEngine, interval: float, stop_event: threading.Event):
++    while not stop_event.is_set():
++        networks = scan_wifi()
++        engine.ingest(networks)
++        stop_event.wait(interval)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    parser.add_argument("--interval", type=float, default=2.0, help="Seconds between WiFi scans (default 2.0)")
++    parser.add_argument("--window", type=int, default=20, help="Rolling samples per network for variance (default 20)")
++    parser.add_argument("--threshold", type=float, default=4.0, help="RSSI variance threshold for 'presence' (default 4.0, tune to your environment)")
++    parser.add_argument("--port", type=int, default=8080, help="Local dashboard port (default 8080)")
++    args = parser.parse_args()
++
++    print("wewalla / RuView — Termux RSSI presence sensor (non-root, phone-only)")
++    print(f"  scan interval : {args.interval}s")
++    print(f"  window        : {args.window} samples")
++    print(f"  threshold     : {args.threshold}")
++    print(f"  dashboard     : http://127.0.0.1:{args.port}")
++    print()
++    print("NOTE: if you turn on your phone's mobile hotspot, scanning may")
++    print("stop returning data — many chipsets can't scan WiFi (client mode)")
++    print("while simultaneously running as an access point. Test it; if scans")
++    print("go empty, that's your answer for this hardware.")
++    print()
++
++    engine = PresenceEngine(window=args.window, threshold=args.threshold)
++    stop_event = threading.Event()
++
++    scanner_thread = threading.Thread(
++        target=scan_loop, args=(engine, args.interval, stop_event), daemon=True
++    )
++    scanner_thread.start()
++
++    server = ThreadingHTTPServer(("0.0.0.0", args.port), make_handler(engine))
++    try:
++        server.serve_forever()
++    except KeyboardInterrupt:
++        pass
++    finally:
++        stop_event.set()
++        server.shutdown()
++
++
++if __name__ == "__main__":
++    main()

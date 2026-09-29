@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# wewalla command-line entry point for Termux.
+set -u
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+HERE="$(cd "$(dirname "$SELF")" && pwd)"
+export WW_REPO="$(cd "$HERE/.." && pwd)"
+# shellcheck source=lib.sh
+. "$HERE/lib.sh"
+
+usage() {
+  cat <<TXT
+wewalla-setup (Termux: native sensing-server tooling; see also: wewalla)
+
+  setup [opts]       guided install (resumable)         doctor         health check
+  lite [opts]        browser monitor on :$WW_HTTP_PORT  server [args]  run the sensing server
+  ui                 serve ./ui on 127.0.0.1:3001       ip             print this phone's address
+  verify             deterministic pipeline proof       adb-fix        lift Android child-process limits
+  patch-installer    make ./install.sh Termux-aware     uninstall      remove ~/.wewalla and the command
+TXT
+}
+
+cmd="${1:-help}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  setup)  exec bash "$HERE/setup.sh" "$@" ;;
+  doctor) exec bash "$HERE/doctor.sh" "$@" ;;
+  lite)   exec python3 "$HERE/lite/lite.py" --udp-port "$WW_UDP_PORT" --http-port "$WW_HTTP_PORT" "$@" ;;
+  server)
+    [ -x "$WW_BIN/sensing-server" ] || { fail "not installed. Run: wewalla setup --only server"; exit 1; }
+    exec "$WW_BIN/sensing-server" "$@" ;;
+  ui)
+    [ -d "$WW_REPO/ui" ] || { fail "no ui/ directory in $WW_REPO"; exit 1; }
+    say "Serving $WW_REPO/ui at http://127.0.0.1:3001 (this device only)"
+    exec python3 -m http.server 3001 --bind 127.0.0.1 --directory "$WW_REPO/ui" ;;
+  ip)     phone_ip; echo ;;
+  verify)
+    cd "$WW_REPO" || exit 1
+    if [ -x ./verify ]; then exec ./verify; else exec python3 archive/v1/data/proof/verify.py; fi ;;
+  adb-fix) exec bash "$HERE/adb-fix.sh" ;;
+  patch-installer) exec bash "$HERE/patch-install-sh.sh" ;;
+  uninstall)
+    if confirm "Remove $WW_HOME and the 'wewalla-setup' command? (the repo itself is kept)" N; then
+      rm -rf "$WW_HOME"; rm -f "$WW_PREFIX/bin/wewalla-setup"; ok "removed"
+    fi ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac

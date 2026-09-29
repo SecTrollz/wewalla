@@ -1,0 +1,57 @@
+name: termux-aarch64
+
+# Cross-compiles the sensing server for Android/Termux (aarch64, bionic) so users never
+# have to compile Rust on a phone. Publishes to the rolling "termux-latest" release that
+# termux/setup.sh downloads from. UNVERIFIED on this fork: if the build fails because a
+# crate needs a system library (e.g. OpenBLAS), vendor or feature-gate it for android.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["termux-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build (API 24 = Termux minimum)
+        working-directory: v2
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: cargo ndk -t arm64-v8a -P 24 build --release -p wifi-densepose-sensing-server
+      - name: Package
+        run: |
+          set -eu
+          bin="$(find v2/target/aarch64-linux-android/release -maxdepth 1 -type f -perm -u+x -name '*sensing-server*' ! -name '*.d' | head -n1)"
+          test -n "$bin"
+          mkdir -p dist && cp "$bin" dist/sensing-server
+          A=wewalla-sensing-server-aarch64-linux-android.tar.gz
+          tar -C dist -czf "$A" sensing-server
+          sha256sum "$A" > "$A.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termux-aarch64
+          path: |
+            wewalla-sensing-server-aarch64-linux-android.tar.gz
+            wewalla-sensing-server-aarch64-linux-android.tar.gz.sha256
+      - name: Publish rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: termux-latest
+          name: Termux aarch64 build (rolling)
+          prerelease: true
+          files: |
+            wewalla-sensing-server-aarch64-linux-android.tar.gz
+            wewalla-sensing-server-aarch64-linux-android.tar.gz.sha256

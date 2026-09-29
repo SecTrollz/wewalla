@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Launcher: works from a checkout with no pip install.
+d="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
+PYTHONPATH="$d${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m wewalla "$@"

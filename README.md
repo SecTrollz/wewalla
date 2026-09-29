@@ -108,6 +108,13 @@ RuView turns ordinary WiFi into a contactless sensor. A $9 ESP32 board reads the
 >
 > 🤗 **Pretrained weights**: download from [`ruvnet/wifi-densepose-pretrained`](https://huggingface.co/ruvnet/wifi-densepose-pretrained) — see [Loading the pretrained model](#loading-the-pretrained-model) below for one-command setup.
 
+### 📱 No ESP32, no root: run it on an Android phone in Termux
+
+[`termux/`](termux/README.md) is a self-contained runtime (pure Python + a small connector APK, both built inside Termux)
+that senses presence and motion from what a stock phone can actually see: RSSI, per-AP scans and Wi-Fi RTT via
+Termux:API and the connector APK. That data is **derived, not CSI**, and is labelled that way; real CSI from any
+non-ESP32 source can be fed in over ADR-018 UDP. See [`termux/README.md`](termux/README.md) for the limits and setup.
+
 <details>
 <summary><strong>Quick start options</strong> — Docker, ESP32-S3/C6, Cognitum Seed, and Python</summary>
 
