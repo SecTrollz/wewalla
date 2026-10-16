@@ -42,7 +42,7 @@ pub struct DspConfig {
 impl Default for DspConfig {
     fn default() -> Self {
         Self {
-            fs_hz: 4.0,
+            fs_hz: 2.0,
             window_secs: 30.0,
             hop_secs: 2.0,
             band_lo_hz: 0.10,
@@ -184,6 +184,47 @@ pub fn fused_threshold(l: u32, n_eff: f64, alpha: f64) -> f32 {
         }
     }
     hi as f32
+}
+
+/// Monte-Carlo thresholds for 1..=8 fused links at the default configuration (30 s window, 2 Hz grid,
+/// 0.10-0.60 Hz band at 0.01 Hz, false-alarm 0.005), worst case over 10/4/2 Hz source rates, from
+/// `rvcsi-node selftest --calibrate --trials 10000` (white noise, sigma 1 dB, integer RSSI).
+/// They replace the analytic Gamma-null value, which was optimistic from 4 links up
+/// (measured false alarm ~1.5% against the 0.5% target).
+pub const CALIBRATED_THRESHOLDS: [f32; 8] = [
+    6.03277, 4.7639112, 4.034816, 3.653425, 3.3709118, 3.1489646, 2.9150064, 2.8115187,
+];
+
+impl DspConfig {
+    /// True when `CALIBRATED_THRESHOLDS` describe this configuration.
+    pub fn matches_calibration(&self) -> bool {
+        let d = DspConfig::default();
+        self.fs_hz == d.fs_hz
+            && self.window_secs == d.window_secs
+            && self.band_lo_hz == d.band_lo_hz
+            && self.band_hi_hz == d.band_hi_hz
+            && self.band_step_hz == d.band_step_hz
+            && self.breath_false_alarm == d.breath_false_alarm
+    }
+
+    /// Detection threshold for `l` fused links: calibrated where a table applies, else analytic.
+    /// Beyond 8 links the analytic curve is scaled by the 8-link calibrated/analytic ratio (extrapolated, untested).
+    pub fn threshold_for(&self, l: usize) -> f32 {
+        let n_eff = (f64::from(self.band_hi_hz - self.band_lo_hz) * f64::from(self.window_secs)
+            / 1.5)
+            .max(1.0);
+        let analytic =
+            |k: usize| fused_threshold(k as u32, n_eff, f64::from(self.breath_false_alarm));
+        let l = l.clamp(1, 32);
+        if !self.matches_calibration() {
+            return analytic(l);
+        }
+        if l <= CALIBRATED_THRESHOLDS.len() {
+            return CALIBRATED_THRESHOLDS[l - 1];
+        }
+        let n = CALIBRATED_THRESHOLDS.len();
+        analytic(l) * (CALIBRATED_THRESHOLDS[n - 1] / analytic(n)).max(1.0)
+    }
 }
 
 pub fn median(scratch: &mut [f32]) -> f32 {

@@ -18,7 +18,10 @@ pub mod engine;
 pub mod export;
 pub mod ingest;
 pub mod node;
+pub mod record;
 pub mod sample;
+pub mod selftest;
+pub mod validate;
 pub mod web;
 
 pub use config::Config;

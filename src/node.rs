@@ -1,10 +1,12 @@
 //! Wires sources -> engine -> exporters + web, and owns shutdown.
 
 use crate::config::{Config, SourceCfg};
-use crate::engine::{Baselines, Engine};
+use crate::engine::{Baselines, Engine, Report};
 use crate::export::{mqtt, udp::UdpExporter};
 use crate::ingest::{self, Health};
+use crate::record::Recorder;
 use crate::sample::{now, Sample};
+use crate::validate::{Collector, Step};
 use crate::web::{self, auth, AppState};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -246,6 +248,149 @@ pub fn calibrate(cfg: Config, secs: f64, stop: Arc<AtomicBool>) -> Result<Baseli
     let json = serde_json::to_vec_pretty(&b).map_err(|e| e.to_string())?;
     write_private_atomic(&cfg.state_path("baseline.json"), &json)?;
     Ok(b)
+}
+
+/// Sources + engine without any exporters: the harness for `record` and `validate`.
+#[derive(Debug)]
+pub struct Live {
+    rx: std::sync::mpsc::Receiver<Sample>,
+    engine: Engine,
+    hop: f64,
+    next: f64,
+    stop: Arc<AtomicBool>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+    pub source_names: Vec<String>,
+}
+
+impl Live {
+    pub fn start(cfg: &Config) -> Result<Self, String> {
+        cfg.validate()?;
+        let srcs = resolve_sources(cfg)?;
+        let mut engine = Engine::new(cfg.dsp.clone(), &cfg.node_id)?;
+        if let Some(b) = load_baselines(&cfg.state_path("baseline.json"))? {
+            engine.load_baselines(&b);
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = sync_channel::<Sample>(4096);
+        let (healths, threads) = spawn_sources(&srcs, &tx, &stop)?;
+        drop(tx);
+        let hop = f64::from(cfg.dsp.hop_secs);
+        Ok(Self {
+            rx,
+            engine,
+            hop,
+            next: now() + hop,
+            stop,
+            threads,
+            source_names: healths.iter().map(|h| h.name.clone()).collect(),
+        })
+    }
+
+    /// Run for `secs`, calling `tap` for every raw sample and returning every report produced.
+    /// Fails if no source delivers anything at all (a dead radio must not look like an empty room).
+    pub fn run_for(
+        &mut self,
+        secs: f64,
+        tap: &mut dyn FnMut(&Sample),
+    ) -> Result<Vec<Report>, String> {
+        let end = now() + secs;
+        let (mut reports, mut seen) = (Vec::new(), 0u64);
+        while now() < end && !self.stop.load(Ordering::Relaxed) {
+            let wait = (self.next - now()).clamp(0.0, 0.25);
+            match self.rx.recv_timeout(Duration::from_secs_f64(wait)) {
+                Ok(s) => {
+                    seen += 1;
+                    tap(&s);
+                    self.engine.push(s);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Err("all sources stopped".into()),
+            }
+            let t = now();
+            if t >= self.next {
+                reports.push(self.engine.step(t));
+                self.next += self.hop;
+                if self.next < t {
+                    self.next = t + self.hop;
+                }
+            }
+        }
+        if seen == 0 {
+            return Err("no samples arrived from any source (is Wi-Fi connected and the source working? try `rvcsi-node probe`)".into());
+        }
+        Ok(reports)
+    }
+
+    pub fn shutdown(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for j in self.threads {
+            let _ = j.join();
+        }
+    }
+}
+
+/// Operator-driven collector for `validate`: prints the instruction, waits for Enter, then measures.
+#[derive(Debug)]
+pub struct LiveCollector {
+    pub live: Live,
+    pub wait_for_enter: bool,
+}
+
+impl Collector for LiveCollector {
+    fn instruct(&mut self, step: &Step) -> Result<(), String> {
+        eprintln!("\n>> {}", step.instruction());
+        if self.wait_for_enter {
+            eprintln!("   Press Enter when ready (measurement starts immediately).");
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+        }
+        Ok(())
+    }
+    fn collect(&mut self, secs: f64) -> Result<Vec<Report>, String> {
+        eprintln!("   measuring for {secs:.0} s ...");
+        self.live.run_for(secs, &mut |_| {})
+    }
+}
+
+/// Record raw samples for `secs` into `path` (mode 0600).
+pub fn record(cfg: &Config, secs: f64, path: &Path) -> Result<u64, String> {
+    if !(1.0..=86_400.0).contains(&secs) {
+        return Err("--secs must be within 1..=86400".into());
+    }
+    let mut live = Live::start(cfg)?;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let f = o.open(path).map_err(|e| {
+        format!(
+            "{}: {e} (refusing to overwrite an existing file)",
+            path.display()
+        )
+    })?;
+    let mut rec = Recorder::new(
+        std::io::BufWriter::new(f),
+        &cfg.node_id,
+        live.source_names.clone(),
+    )?;
+    let mut write_err: Option<String> = None;
+    let res = live.run_for(secs, &mut |s| {
+        if write_err.is_none() {
+            if let Err(e) = rec.write(s) {
+                write_err = Some(e);
+            }
+        }
+    });
+    let n = rec.written;
+    rec.finish()?;
+    live.shutdown();
+    if let Some(e) = write_err {
+        return Err(e);
+    }
+    res.map(|_| n)
 }
 
 #[cfg(test)]

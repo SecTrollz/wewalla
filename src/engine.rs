@@ -1,6 +1,6 @@
 //! The sensing engine: per-link ring buffers -> presence + breathing report.
 
-use crate::dsp::{detrended_std, fused_threshold, median, DspConfig, Spectral};
+use crate::dsp::{detrended_std, median, DspConfig, Spectral};
 use crate::sample::{unix_ms, Kind, Sample};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -97,15 +97,7 @@ impl Engine {
             conf_hist: VecDeque::with_capacity(4),
             bpm_hist: VecDeque::with_capacity(6),
             preset: BTreeMap::new(),
-            thresholds: {
-                // Hann window: equivalent noise bandwidth is 1.5 bins of width 1/T.
-                let n_eff =
-                    (f64::from(cfg.band_hi_hz - cfg.band_lo_hz) * f64::from(cfg.window_secs) / 1.5)
-                        .max(1.0);
-                (1..=32)
-                    .map(|l| fused_threshold(l, n_eff, f64::from(cfg.breath_false_alarm)))
-                    .collect()
-            },
+            thresholds: (1..=32).map(|l| cfg.threshold_for(l)).collect(),
             cfg,
         })
     }

@@ -89,17 +89,33 @@ choose". Full DSP knobs live under `dsp` (see `docs/DSP.md`). `rvcsi-node check-
 ## Development
 
 ```
-cargo test --release        # 94 tests: DSP statistics, parsers, MQTT vs a mock broker, HTTP/WS end-to-end
+cargo test --release        # 109 tests: DSP statistics (incl. out-of-sample false-alarm), parsers, MQTT vs a mock broker, HTTP/WS end-to-end, validation logic
 cargo clippy --release --all-targets -- -D warnings
 cargo check --release --target aarch64-linux-android
 node --test ui/sw.test.mjs ui/services/ws-ticket.test.mjs ui/services/websocket.service.test.mjs
 rvcsi-node bench --links 8  # DSP cost
+rvcsi-node selftest         # measured detection / false-alarm rates (simulation)
 ```
 
-Measured on an x86-64 dev host (not the phone): 8 links at 10 Hz, one report step p50 ≈ 41 µs,
-p99 ≈ 63 µs; ingest ≈ 170 ns/sample. Run `bench` on the device for real numbers; build there with
+Measured on an x86-64 dev host (not the phone; varies run to run): 8 links at 10 Hz, one report step
+p50 ≈ 42–58 µs, p99 ≈ 63–106 µs; ingest ≈ 230 ns/sample. Run `bench` on the device for real numbers; build there with
 `RUSTFLAGS="-C target-cpu=native"` (the setup script does). Cross-compiling needs an NDK linker
 (see `.cargo/config.toml`); CI type-checks the Android target but does not link or run it.
+
+## Proving it on your phone
+
+The simulation shows the detector's statistics; only a field test shows your phone. `docs/VALIDATION.md`
+has the full protocol:
+
+```
+rvcsi-node validate --mode empty --secs 600            # empty-room false-alarm control, always first
+rvcsi-node validate --mode paced --bpm 12              # metronome-paced breathing: is the rate right?
+rvcsi-node validate --mode range --target-ft 40        # 8 bearings x 5..40 ft coverage, PASS/FAIL per cell
+rvcsi-node record --out walk.jsonl --secs 600          # raw capture; `rvcsi-node replay walk.jsonl` re-runs it anywhere
+bash scripts/diag.sh A|B|C                             # read-only device report: radios, driver, hotspot, Bluetooth
+```
+The 40 ft requirement is an acceptance test, not a claim: presence at 40 ft is plausible on RSSI with
+several links; breathing at 40 ft is not expected from RSSI alone.
 
 ## Layout
 
@@ -109,7 +125,10 @@ src/engine.rs   per-link state, presence + breathing decisions, calibration base
 src/ingest/     Android link backends, bounded process exec, UDP bridge, synthetic source
 src/export/     UDP, MQTT 3.1.1 client, Home Assistant discovery
 src/web/        strict HTTP/1.1, WebSocket, SSE, auth, map store, static server
-src/node.rs     orchestration + calibration;  src/bin/rvcsi-node.rs  CLI
+src/node.rs     orchestration, calibration, live harness;  src/bin/rvcsi-node.rs  CLI
+src/record.rs   raw recordings + deterministic replay
+src/validate.rs empty / paced / range field tests and verdicts
+src/selftest.rs measured false-alarm / detection tables, threshold calibration
 ui/             retained web UI and 3D room model (three.js vendored in ui/vendor)
 ```
 
