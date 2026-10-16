@@ -1,0 +1,37 @@
+[package]
+name = "rvcsi"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Self-contained Wi-Fi sensing node for Android/Termux: link ingest, sliding-window DSP (presence, breathing), local UDP + MQTT (Home Assistant discovery), local web UI"
+license = "MIT"
+publish = false
+
+[lib]
+name = "rvcsi"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rvcsi-node"
+path = "src/bin/rvcsi-node.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+panic = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true

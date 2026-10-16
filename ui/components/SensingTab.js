@@ -150,16 +150,11 @@ export class SensingTab {
       return;
     }
 
-    return new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
-      script.onload = () => {
-        this._threeLoaded = true;
-        resolve();
-      };
-      script.onerror = () => reject(new Error('Failed to load Three.js'));
-      document.head.appendChild(script);
-    });
+    // Vendored locally (no CDN). three r160 ships only as an ES module, so import it
+    // and expose the namespace as the global the splat renderer expects.
+    const mod = await import('/vendor/three/three.module.js');
+    window.THREE = { ...mod };
+    this._threeLoaded = true;
   }
 
   // ---- Splat renderer ----------------------------------------------------

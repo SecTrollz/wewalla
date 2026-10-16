@@ -1,0 +1,9 @@
+{
+  "node_id": "edge2025",
+  "device_name": "Motorola Edge (2025)",
+  "sources": [],
+  "dsp": {},
+  "udp": { "enabled": true, "targets": ["127.0.0.1:5005"] },
+  "mqtt": { "enabled": true, "host": "127.0.0.1", "port": 1883, "discovery_prefix": "homeassistant", "base_topic": "rvcsi" },
+  "http": { "enabled": true, "bind": "127.0.0.1:8765", "ui_dir": "ui" }
+}

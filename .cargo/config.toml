@@ -1,0 +1,6 @@
+# Cross-compiling from a desktop: point the linker at your NDK (r26+), e.g.
+#   export ANDROID_NDK_HOME=$HOME/android-ndk-r26d
+#   export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang
+# Building natively inside Termux needs no linker setting; add
+#   RUSTFLAGS="-C target-cpu=native"
+# there (never put target-cpu=native in this file: it would target the *host* CPU when cross-compiling).

@@ -1,3 +1,0 @@
-[mcp_servers.homecore]
-command = "homecore"
-args = ["mcp", "start"]

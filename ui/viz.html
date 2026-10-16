@@ -93,13 +93,13 @@
   <script type="importmap">
   {
     "imports": {
-      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      "three": "/vendor/three/three.module.js",
+      "three/addons/": "/vendor/three/addons/"
     }
   }
   </script>
   <!-- Stats.js for performance monitoring -->
-  <script src="https://unpkg.com/stats.js@0.17.0/build/stats.min.js"></script>
+  <script src="/vendor/stats/stats.min.js"></script>
 
   <!-- All app code lives in one module so global THREE is installed before
        the component modules run. Two separate module scripts would race
